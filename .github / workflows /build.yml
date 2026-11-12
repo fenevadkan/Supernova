@@ -14,3 +14,4 @@ jobs:
         with:
           name: Supernova-Debug
           path: app/build/outputs/apk/debug/*.apk
+          
