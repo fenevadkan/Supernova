@@ -183,8 +183,9 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
                 override val root: View get() = binding.root
                 override fun openDrawer() = this@LauncherActivity.openDrawer()
                 override fun expandNotificationShade() = this@LauncherActivity.expandNotificationShade()
-                override fun showPage(page: Int) =
-                    binding.workspacePager.setCurrentItem(workspaceAdapter.centerPosition(page), true)
+                override fun showPage(page: Int) = binding.workspacePager.setCurrentItem(
+                    workspaceAdapter.centerPosition(page), Animations.scrollPages(viewModel.state.value.prefs)
+                )
                 override fun openSearch(query: String?) = if (query == null) search.open() else search.open(query)
                 override fun launchApp(app: LaunchableApp) = this@LauncherActivity.launchApp(app)
                 override fun launchShortcut(packageName: String, shortcutId: String, userSerial: Long) =
@@ -565,7 +566,9 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
             override fun pageViewFor(page: Int): View? = attachedPageView(page)
             override fun accentColor(): Int = getColor(R.color.accent)
             override fun jumpToPage(page: Int) {
-                binding.workspacePager.setCurrentItem(workspaceAdapter.centerPosition(page), true)
+                binding.workspacePager.setCurrentItem(
+                    workspaceAdapter.centerPosition(page), Animations.scrollPages(viewModel.state.value.prefs)
+                )
             }
             override fun addPage() {
                 viewModel.addPage()
@@ -1317,6 +1320,9 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
             onFolderClick = { view, group, members -> showDrawerFolderPopup(view, group, members) },
             onFolderLongPress = ::longPressDrawerFolder,
             onTabMenu = ::showDrawerTabMenu,
+            customTabIcon = { group ->
+                itemIcons.customFolderIcon(group.iconBase64, group.iconPack, group.iconName, group.iconRaw)
+            },
             cards = object : DrawerController.CardHost {
                 // Launches from a drawer card close the drawer like an app tap.
                 private val binder = cards.binder(afterLaunch = { hideDrawer() })
@@ -2452,10 +2458,13 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
         // A private space card still waiting on its unlock is called off too,
         // and a swipe home over its unlock prompt is that prompt's close.
         val promptClosed = privateSpaceCard.cancelPending()
+        // With animations off (the launcher's or the system's) home lands
+        // at once instead of scrolling past every page in between (#123).
+        val scroll = Animations.scrollPages(viewModel.state.value.prefs)
         // A folder card the same swipe closed on its first touch (#110), read
         // after the reset, whose own closes don't count twice.
         val closed = com.supernova.launcher.ui.OpenDialogs.dismissAll(this) or
-            resetToHome(animate = true, keepDrawer = keepDrawerOpen) or
+            resetToHome(animate = scroll, keepDrawer = keepDrawerOpen) or
             cardSwipeClose.takeFor(SystemClock.uptimeMillis()) or promptClosed
         // The double-home action: pressing home when there was nothing to
         // close and nowhere to scroll runs the configured action instead of
@@ -3867,6 +3876,24 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
         val content = com.supernova.launcher.databinding.DialogNewGroupBinding.inflate(layoutInflater)
         content.newGroupField.addView(com.supernova.launcher.ui.DialogField.wrap(input))
         content.newGroupKeep.isChecked = !viewModel.leavesMainList(group)
+        // The tab's icon, for the Icon and Label and icon tab contents:
+        // Default (its glyph or letter), an app's icon, a photo or a pack icon.
+        val icon = TabIconChoice(group.iconPack, group.iconName, group.iconBase64)
+        fun renderIcon() {
+            content.newGroupIconValue.text = icon.photo?.let { getString(R.string.icon_photo) }
+                ?: icon.name?.let { com.supernova.launcher.ui.IconPickerSheet.pickLabel(viewModel, icon.pack, it) }
+                ?: getString(R.string.option_default)
+        }
+        renderIcon()
+        content.newGroupIconRow.visibility = View.VISIBLE
+        content.newGroupIconRow.setOnClickListener {
+            pickTabIcon { pack, name, photo ->
+                icon.pack = pack
+                icon.name = name
+                icon.photo = photo
+                renderIcon()
+            }
+        }
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.edit_tab)
             .setView(content.root)
@@ -3877,10 +3904,44 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
                     Toast.makeText(this, R.string.group_name_taken, Toast.LENGTH_SHORT).show()
                 } else {
                     drawer.followTabRename(group.name, renamed)
+                    if (icon != TabIconChoice(group.iconPack, group.iconName, group.iconBase64)) {
+                        viewModel.setGroupIcon(
+                            renamed,
+                            group.copy(
+                                iconPack = icon.pack, iconName = icon.name, iconBase64 = icon.photo, iconRaw = false
+                            )
+                        )
+                    }
                 }
             }
             .setNegativeButton(R.string.cancel, null)
             .showTracked()
+    }
+
+    // What Edit tab's icon row holds until Save.
+    private data class TabIconChoice(var pack: String?, var name: String?, var photo: String?)
+
+    // The icon picker for a tab: Default, an app's icon, a pack icon or a
+    // photo (gallery or files), handed back as pack, name or photo.
+    private fun pickTabIcon(onPicked: (pack: String?, name: String?, photo: String?) -> Unit) {
+        val onPhoto = { fromFiles: Boolean ->
+            pickPhoto(fromFiles) { uri ->
+                if (uri == null) return@pickPhoto
+                lifecycleScope.launch {
+                    val encoded = withContext(Dispatchers.IO) {
+                        com.supernova.launcher.data.GalleryIconCodec.encode(applicationContext, uri)
+                    }
+                    if (encoded == null) {
+                        Toast.makeText(this@LauncherActivity, R.string.photo_load_failed, Toast.LENGTH_SHORT).show()
+                    } else {
+                        onPicked(null, null, encoded)
+                    }
+                }
+            }
+        }
+        com.supernova.launcher.ui.IconPickerSheet.show(
+            this, lifecycleScope, viewModel, allowDefault = true, onPickPhoto = onPhoto
+        ) { pack, name -> onPicked(pack, name, null) }
     }
 
     // Settings' Hidden apps picker, from the All tab's menu.
@@ -4124,6 +4185,7 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
             if (swipeToOpen) launchFolderFirstItem(item, it) else launchItem(item, it)
         }
         iconBinding.root.setOnLongClickListener { v ->
+            if (liftPageFromItem(v, item)) return@setOnLongClickListener true
             drag.arm(v, DragPayload.ExistingItem(item.id)) { showWorkspaceItemMenu(v, item) }
             true
         }
@@ -4323,6 +4385,24 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
         cancel.recycle()
     }
 
+    // In edit mode a long-press on an icon, folder or widget lifts its page
+    // like one on empty space: a page full of icons (an imported layout, say)
+    // has no empty spot to hold. True when edit mode took the press.
+    private fun liftPageFromItem(view: View, item: LauncherItem): Boolean {
+        val taken = ::editMode.isInitialized && editMode.isOpen && !desktopLocked &&
+            item.container == ContainerType.WORKSPACE
+        // An item on a neighbouring page peeking at the edge doesn't lift the
+        // page in view.
+        if (taken && item.page == workspaceAdapter.realPage(binding.workspacePager.currentItem)) {
+            // The page's picture is drawn as it lifts: without the press
+            // highlight still on the held item.
+            view.isPressed = false
+            view.jumpDrawablesToCurrentState()
+            startPageDrag()
+        }
+        return taken
+    }
+
     // The live view rendering this page, when the pager still has one: with
     // infinite scroll, the copy nearest the one in view.
     private fun attachedPageView(page: Int): View? {
@@ -4441,6 +4521,7 @@ class LauncherActivity : AppCompatActivity(), WorkspacePagerAdapter.Host, LiveDr
     }
 
     override fun onWidgetLongPress(view: View, item: LauncherItem) {
+        if (liftPageFromItem(view, item)) return
         drag.arm(view, DragPayload.ExistingItem(item.id)) { showWorkspaceItemMenu(view, item) }
     }
 

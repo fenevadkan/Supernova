@@ -19,6 +19,7 @@ import com.supernova.launcher.data.CustomShapeSpec
 import com.supernova.launcher.data.DeviceProfile
 import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.DrawerGroupEdit
+import com.supernova.launcher.data.DrawerGroupOrder
 import com.supernova.launcher.data.DrawerGroupType
 import com.supernova.launcher.data.GroupPick
 import com.supernova.launcher.data.IconPack
@@ -386,7 +387,23 @@ class LauncherViewModel(
         privateSpaceFlow.value = catalog.privateSpace()
         pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        pruneUninstalled(apps)
         catalog.warmIcons(apps)
+    }
+
+    // Catching up on uninstalls the launcher missed (its process was gone
+    // when the app went): an item whose app is no longer installed goes, as
+    // it does on onPackageRemoved. Only apps the scan didn't list are asked
+    // about, and isUninstalled keeps anything that may come back.
+    private suspend fun pruneUninstalled(apps: List<LaunchableApp>) {
+        val listed = apps.mapTo(HashSet()) { "${it.userSerial}/${it.packageName}" }
+        repository.modelFlow.first().items.asSequence()
+            .filter { it.itemType == ItemType.APP || it.itemType == ItemType.SHORTCUT }
+            .mapNotNull { item -> item.packageName?.let { it to item.userSerial } }
+            .distinct()
+            .filter { (pkg, serial) -> "$serial/$pkg" !in listed && catalog.isUninstalled(pkg, serial) }
+            .toList()
+            .forEach { (pkg, serial) -> repository.removeItemsForPackage(pkg, serial) }
     }
 
     // Auto-add: a newly installed primary-profile app lands on the first page
@@ -481,6 +498,7 @@ class LauncherViewModel(
         privateSpaceFlow.value = catalog.privateSpace()
         pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        pruneUninstalled(apps)
         // Pre-warm off the main thread so binds become cache hits; the
         // render lock keeps this safe alongside main-thread misses.
         catalog.warmIcons(apps)
@@ -1167,6 +1185,21 @@ class LauncherViewModel(
         }
     }
 
+    // A drag on the Drawer groups page: one type's groups in a new order.
+    fun setGroupOrder(type: DrawerGroupType, names: List<String>) {
+        viewModelScope.launch {
+            preferences.updateDrawerGroups { DrawerGroupOrder.reordered(it, type, names) }
+        }
+    }
+
+    // Undo of a delete on the Drawer groups page: the group back out of
+    // before, the list as it stood when it was deleted.
+    fun restoreGroup(before: List<DrawerGroup>, name: String) {
+        viewModelScope.launch {
+            preferences.updateDrawerGroups { DrawerGroupOrder.restored(it, before, name) }
+        }
+    }
+
     fun appsInGroup(group: DrawerGroup?): List<LaunchableApp> {
         val visible = visibleApps()
         if (group == null) return visible
@@ -1413,7 +1446,8 @@ class LauncherViewModel(
                         android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                             ?.let(com.supernova.launcher.data.GalleryIconCodec::encode)
                     },
-                    widgetName = ::widgetName
+                    widgetName = ::widgetName,
+                    installed = ::isInstalled
                 ),
                 ::isInstalled,
                 widgetBoundCheck()

@@ -23,14 +23,16 @@ import com.supernova.launcher.gesture.GestureDefaults
 import com.supernova.launcher.gesture.HomeButtonAction
 import com.supernova.launcher.search.WebProvider
 import com.supernova.launcher.ui.DrawerSort
+import com.supernova.launcher.ui.DrawerTabAlign
 import com.supernova.launcher.ui.DrawerTabBar
+import com.supernova.launcher.ui.DrawerTabContent
 import com.supernova.launcher.ui.DrawerTabStyle
 import com.supernova.launcher.ui.FolderMode
 import com.supernova.launcher.ui.FolderScroll
 import com.supernova.launcher.ui.DesktopSearchBarConfig
-import com.supernova.launcher.ui.DrawerActionButton
 import com.supernova.launcher.ui.DrawerBarPlacement
 import com.supernova.launcher.ui.DrawerSearchBarConfig
+import com.supernova.launcher.ui.SearchBarButtons
 import com.supernova.launcher.ui.SearchBarChip
 import com.supernova.launcher.ui.SearchBarConfig
 import com.supernova.launcher.ui.SearchBarPlacement
@@ -49,6 +51,7 @@ import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.SurfaceId
 import com.supernova.launcher.ui.theme.ThemeMode
 import com.supernova.launcher.ui.LauncherViewModel
+import com.supernova.launcher.ui.settings.groups.GroupListBuilder
 import com.supernova.launcher.ui.ScrollEffect
 
 // The single registry of every setting, grouped into sections. Adding a
@@ -74,7 +77,6 @@ object SettingsCatalogue {
         val editGesture: (Gesture) -> Unit = {},
         val pickLockMethod: () -> Unit = {},
         val editHiddenApps: () -> Unit = {},
-        val editDrawerGroups: () -> Unit = {},
         val editSearchChips: () -> Unit = {},
         val pickDrawerGrid: () -> Unit = {},
         val editFolderIcon: () -> Unit = {},
@@ -191,14 +193,18 @@ object SettingsCatalogue {
 
         // A gesture's row: its name, what it does now (a launch shows its
         // target), and the action picker on tap.
-        fun gestureRow(gesture: Gesture): SettingItem.Row = SettingItem.Row(
+        fun gestureRow(
+            gesture: Gesture,
+            visibleIf: (LauncherPrefs) -> Boolean = { true }
+        ): SettingItem.Row = SettingItem.Row(
             EnumLabels.of(gesture),
             subtitle = { prefs ->
                 val binding = GestureDefaults.decode(prefs.gestureBindings)[gesture]
                     ?: com.supernova.launcher.gesture.GestureBinding(GestureAction.NONE)
                 binding.label ?: context.getString(EnumLabels.of(binding.action))
             },
-            onClick = { actions.editGesture(gesture) }
+            onClick = { actions.editGesture(gesture) },
+            visibleIf = visibleIf
         )
 
         // Every row on a search bar's page edits one field of its slice of
@@ -219,8 +225,8 @@ object SettingsCatalogue {
 
         // A button on the bar. Turning one on adds it after the others, so
         // they show in the order they were turned on.
-        fun barChip(chip: SearchBarChip, @StringRes title: Int) = SettingItem.Toggle(
-            title,
+        fun barChip(chip: SearchBarChip) = SettingItem.Toggle(
+            SearchBarButtons.label(chip),
             get = { prefs -> SearchBarPrefs.desktopBar(prefs).chips.any { SearchBarChip.fromName(it) == chip } },
             set = { on ->
                 editDesktopBar { bar ->
@@ -779,6 +785,22 @@ object SettingsCatalogue {
                             it.drawerTabBar != DrawerTabBar.NONE
                     }
                 ) { viewModel.set(Pref.drawerTabStyle, it) },
+                rows.choice(
+                    R.string.drawer_tab_content, DrawerTabContent.entries,
+                    { it.drawerTabContent }, { EnumLabels.of(it) },
+                    visibleIf = {
+                        (viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps()) &&
+                            it.drawerTabBar != DrawerTabBar.NONE
+                    }
+                ) { viewModel.set(Pref.drawerTabContent, it) },
+                rows.choice(
+                    R.string.drawer_tab_align, DrawerTabAlign.entries,
+                    { it.drawerTabAlign }, { EnumLabels.of(it) },
+                    visibleIf = {
+                        (viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps()) &&
+                            it.drawerTabBar != DrawerTabBar.NONE
+                    }
+                ) { viewModel.set(Pref.drawerTabAlign, it) },
                 SettingItem.Toggle(
                     R.string.drawer_work_tab,
                     get = { it.drawerWorkTab },
@@ -808,7 +830,13 @@ object SettingsCatalogue {
                     visibleIf = { viewModel.drawerTabGroups().isNotEmpty() }
                 ),
                 SettingItem.Row(R.string.hidden_apps, onClick = actions.editHiddenApps),
-                SettingItem.Row(R.string.drawer_groups, onClick = actions.editDrawerGroups),
+                // A page of its own (ui/settings/groups); the row counts
+                // what it holds.
+                SettingItem.Row(
+                    R.string.drawer_groups,
+                    subtitle = { GroupListBuilder(context, viewModel).summary() },
+                    onClick = { actions.openSection(R.string.drawer_groups) }
+                ),
                 // Isolate tabs. Whether a group's apps also stay in
                 // All is the group's own choice now (Keep apps in main app
                 // tab); the old switch of that name only still decides it
@@ -965,6 +993,10 @@ object SettingsCatalogue {
                 )
             )
         ),
+        // The Drawer groups page, opened from the App drawer page's row;
+        // back returns there. It has no rows of its own: SettingsActivity
+        // shows DrawerGroupsPane in the list's place.
+        SettingsSection(R.string.drawer_groups, emptyList()),
         // The Desktop search bar's own page, opened from the Search page's
         // Search bars group (and the bar's long-press menu); back returns there.
         SettingsSection(
@@ -1018,12 +1050,9 @@ object SettingsCatalogue {
                     get = { SearchBarPrefs.desktopBar(it).hint },
                     set = { on -> rows.editDesktopBar { it.copy(hint = on) } }
                 ),
-                SettingItem.Header(R.string.search_bar_chips),
-                rows.barChip(SearchBarChip.DATE, R.string.search_bar_chip_date),
-                rows.barChip(SearchBarChip.ASSISTANT, R.string.search_bar_chip_assistant),
-                rows.barChip(SearchBarChip.PLAY_STORE, R.string.chip_play_store),
-                rows.barChip(SearchBarChip.VOICE, R.string.search_bar_chip_voice)
-            )
+                SettingItem.Header(R.string.search_bar_chips)
+                // The same buttons as the drawer field's, in the same order.
+            ) + SearchBarButtons.ROWS.map(rows::barChip)
         ),
         // The drawer field's own page, opened from the same Search bars group.
         SettingsSection(
@@ -1079,9 +1108,7 @@ object SettingsCatalogue {
                 ),
                 // The buttons inside the field, at its right end; gone with it.
                 SettingItem.Header(R.string.search_bar_chips, visibleIf = { SearchBarPrefs.drawerFieldShown(it) }),
-                drawerButton(viewModel, DrawerActionButton.PLAY_STORE, R.string.chip_play_store),
-                drawerButton(viewModel, DrawerActionButton.SETTINGS, R.string.settings),
-            )
+            ) + SearchBarButtons.ROWS.map { drawerButton(viewModel, it) }
         ),
         // Feed page: the page toggle, then Layout (frequent apps and
         // shortcuts, the rows stepper, the search bar), with the edge swipe
@@ -1549,6 +1576,18 @@ object SettingsCatalogue {
                     get = { it.popupNotifications },
                     set = { viewModel.set(Pref.popupNotifications, it) }
                 ),
+                rows.choice(
+                    R.string.popup_style, com.supernova.launcher.ui.PopupMenuStyle.entries,
+                    { it.popupStyle }, { EnumLabels.of(it) },
+                    onPick = { viewModel.set(Pref.popupStyle, it) }
+                ),
+                SettingItem.Toggle(
+                    R.string.popup_group_shortcuts,
+                    get = { it.popupGroupShortcuts },
+                    set = { viewModel.set(Pref.popupGroupShortcuts, it) },
+                    visibleIf = { it.popupStyle.canGroup },
+                    subtitle = R.string.popup_group_shortcuts_summary
+                ),
                 SettingItem.Toggle(
                     R.string.popup_card_bg,
                     get = { it.popupCardBg },
@@ -1558,18 +1597,6 @@ object SettingsCatalogue {
                         !it.popupGroupShortcuts ||
                             !it.popupStyle.canGroup
                     }
-                ),
-                SettingItem.Toggle(
-                    R.string.popup_group_shortcuts,
-                    get = { it.popupGroupShortcuts },
-                    set = { viewModel.set(Pref.popupGroupShortcuts, it) },
-                    visibleIf = { it.popupStyle.canGroup },
-                    subtitle = R.string.popup_group_shortcuts_summary
-                ),
-                rows.choice(
-                    R.string.popup_style, com.supernova.launcher.ui.PopupMenuStyle.entries,
-                    { it.popupStyle }, { EnumLabels.of(it) },
-                    onPick = { viewModel.set(Pref.popupStyle, it) }
                 )
             )
         ),
@@ -1593,8 +1620,19 @@ object SettingsCatalogue {
                     },
                     subtitle = R.string.swipe_down_haptic_summary
                 ),
-                rows.gestureRow(Gesture.SWIPE_LEFT),
-                rows.gestureRow(Gesture.SWIPE_RIGHT),
+                // Every sideways swipe turns the page with infinite scroll
+                // on, so these never fire: one notice stands in for both
+                // rows (#122). Their bindings stay for when it's off.
+                rows.gestureRow(Gesture.SWIPE_LEFT, visibleIf = { !it.infiniteScroll }),
+                rows.gestureRow(Gesture.SWIPE_RIGHT, visibleIf = { !it.infiniteScroll }),
+                SettingItem.Row(
+                    0,
+                    subtitle = { context.getString(R.string.gesture_left_right_conflict_summary) },
+                    onClick = {},
+                    visibleIf = { it.infiniteScroll },
+                    titleText = context.getString(R.string.gesture_left_right_conflict),
+                    look = SettingItem.RowLook(tappable = false)
+                ),
                 rows.gestureRow(Gesture.DOUBLE_TAP),
                 rows.gestureRow(Gesture.DOUBLE_TAP_SWIPE_UP),
                 rows.gestureRow(Gesture.DOUBLE_TAP_SWIPE_DOWN),
@@ -1896,22 +1934,14 @@ object SettingsCatalogue {
     }
 }
 
-// One of the drawer field's buttons (drawerActionButtons), on and off; they
-// keep their own order whichever is turned on first.
-private fun drawerButton(
-    viewModel: LauncherViewModel,
-    button: DrawerActionButton,
-    @StringRes title: Int
-) = SettingItem.Toggle(
-    title,
-    get = { button in DrawerActionButton.decode(it.drawerActionButtons) },
+// One of the drawer field's buttons (drawerActionButtons), on and off. As on
+// the home bar, turning one on adds it after the others.
+private fun drawerButton(viewModel: LauncherViewModel, button: SearchBarChip) = SettingItem.Toggle(
+    SearchBarButtons.label(button),
+    get = { button in SearchBarButtons.decode(it.drawerActionButtons) },
     set = { on ->
-        val now = DrawerActionButton.decode(viewModel.state.value.prefs.drawerActionButtons).toSet()
-        val next = if (on) now + button else now - button
-        viewModel.set(
-            Pref.drawerActionButtons,
-            DrawerActionButton.encode(DrawerActionButton.entries.filter { it in next })
-        )
+        val now = SearchBarButtons.decode(viewModel.state.value.prefs.drawerActionButtons)
+        viewModel.set(Pref.drawerActionButtons, SearchBarButtons.encode(SearchBarButtons.toggled(now, button, on)))
     },
     visibleIf = { SearchBarPrefs.drawerFieldShown(it) }
 )

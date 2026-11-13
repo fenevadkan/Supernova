@@ -84,20 +84,26 @@ enum class DrawerTabStyle {
     }
 }
 
-// Optional header action buttons beside the drawer search field (C10),
-// stored comma-joined in the drawerActionButtons pref. A stored SEARCH (since
-// removed) is simply dropped by decode.
-enum class DrawerActionButton {
-    PLAY_STORE,
-    SETTINGS;
+// What each drawer tab shows: its name, its icon, or the icon before the name.
+@kotlinx.serialization.Serializable(with = DrawerTabContent.Names::class)
+enum class DrawerTabContent {
+    LABEL,
+    ICON,
+    LABEL_AND_ICON;
 
-    companion object {
-        fun decode(raw: String): List<DrawerActionButton> =
-            raw.split(',').mapNotNull { token ->
-                entries.firstOrNull { it.name.equals(token.trim(), ignoreCase = true) }
-            }
+    val showsIcon: Boolean get() = this != LABEL
+    val showsLabel: Boolean get() = this != ICON
 
-        fun encode(buttons: List<DrawerActionButton>): String =
-            buttons.joinToString(",") { it.name }
-    }
+    // Its name in the store and in a backup, read back leniently.
+    object Names : SettingEnumSerializer<DrawerTabContent>("DrawerTabContent", entries, LABEL)
+}
+
+// Where the drawer's tabs sit in their row while they don't fill it.
+@kotlinx.serialization.Serializable(with = DrawerTabAlign.Names::class)
+enum class DrawerTabAlign {
+    START,
+    CENTER;
+
+    // Its name in the store and in a backup, read back leniently.
+    object Names : SettingEnumSerializer<DrawerTabAlign>("DrawerTabAlign", entries, START)
 }

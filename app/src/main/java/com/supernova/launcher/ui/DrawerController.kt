@@ -53,6 +53,8 @@ class DrawerController(
     // A tab's menu, anchored to the tab: a group tab's (its group as
     // stored), or the All tab's (null).
     private val onTabMenu: (View, DrawerGroup?) -> Unit = { _, _ -> },
+    // A group tab's picked icon (pack, app icon or photo), null for none.
+    private val customTabIcon: (DrawerGroup) -> Drawable? = { null },
     // Activated custom cards above the list (the drawer cards); null
     // leaves the slot empty.
     private val cards: CardHost? = null
@@ -112,6 +114,8 @@ class DrawerController(
     private var needsRefresh = false
     // A badge moved while the sheet was closed; the next open rebinds rows.
     private var badgesStale = false
+    // The field's Date button, if on; each open brings it up to today.
+    private var dateButton: android.widget.TextView? = null
     private var suppressFilterEvents = false
     // Mirrors the IME inset so a drag-dismiss knows whether there was a
     // keyboard to take down with the sheet.
@@ -643,6 +647,7 @@ class DrawerController(
             cardsShown = true
             cards?.onShown()
         }
+        dateButton?.text = SearchBarButtons.dateText(context)
         // Usage orders shift with every launch; those changes no longer
         // re-emit state, so refresh the ordering as the drawer opens.
         val byUsage = prefs.drawerSort == DrawerSort.MOST_USED || prefs.drawerSort == DrawerSort.RECENTLY_USED
@@ -1458,9 +1463,21 @@ class DrawerController(
         if (show == hiddenAppsShown) return
         hiddenAppsShown = show
         val tabs = binding.drawerTabs
-        (0 until tabs.tabCount).mapNotNull { tabs.getTabAt(it) }.firstOrNull { it.tag == null }?.setText(allTabLabel())
+        (0 until tabs.tabCount).mapNotNull { tabs.getTabAt(it) }.firstOrNull { it.tag == null }
+            ?.let { labelTab(it, allTabLabel(), viewModel.state.value.prefs.drawerTabContent) }
         if (populated) submit() else needsRefresh = true
     }
+
+    // Icon only: the name stays as the tab's description, for TalkBack and
+    // the tooltip.
+    private fun labelTab(tab: TabLayout.Tab, label: String, content: DrawerTabContent) {
+        tab.text = if (content.showsLabel) label else null
+        tab.contentDescription = label
+    }
+
+    // What a group tab's picked icon is, so picking another rebuilds the bar.
+    private fun iconKey(group: DrawerGroup): String =
+        if (group.hasCustomIcon) "${group.iconPack}/${group.iconName}/${group.iconBase64?.hashCode()}" else ""
 
     private fun allTabLabel(): String =
         binding.root.context.getString(R.string.drawer_all) + if (hiddenAppsShown) "*" else ""
@@ -1472,6 +1489,39 @@ class DrawerController(
         if (tab.name == from) selectedTab = tab.copy(name = to)
     }
 
+    // The bar's tabs in order: All, Work, the group tabs (none while the bar
+    // is off), Private. Added unselected; see rebuildTabs.
+    private fun addTabs(
+        groups: List<DrawerGroup>,
+        content: DrawerTabContent,
+        all: Boolean,
+        work: Boolean,
+        private: Boolean
+    ) {
+        val tabs = binding.drawerTabs
+        val context = binding.root.context
+        fun add(tag: Any?, label: String, icon: () -> Drawable) {
+            val tab = tabs.newTab().also { it.tag = tag }
+            labelTab(tab, label, content)
+            if (content.showsIcon) tab.icon = icon()
+            tabs.addTab(tab, false)
+        }
+        if (all) {
+            add(null, allTabLabel()) { TabIcons.glyph(context, TabIcons.ALL) }
+        }
+        if (work) {
+            add(WorkTab, context.getString(R.string.drawer_work)) { TabIcons.glyph(context, TabIcons.WORK) }
+        }
+        groups.forEach { group ->
+            add(group, group.name) {
+                customTabIcon(group)?.let { TabIcons.Untinted(it) } ?: TabIcons.groupGlyph(context, group.name)
+            }
+        }
+        if (private) {
+            add(PrivateTab, context.getString(R.string.drawer_private)) { TabIcons.glyph(context, TabIcons.PRIVATE) }
+        }
+    }
+
     private fun rebuildTabs(prefs: LauncherPrefs) {
         val tabBarMode = prefs.drawerTabBar
         val groups = viewModel.drawerTabGroups()
@@ -1481,8 +1531,8 @@ class DrawerController(
         // the bar up even when it is set to None - with All beside it only.
         val tabsOff = tabBarMode == DrawerTabBar.NONE
         val hideAll = prefs.drawerHideAllTab && groups.isNotEmpty() && !tabsOff
-        val key = "${tabBarMode.name}|${groups.joinToString { "${it.name}:${it.order}" }}|" +
-            "$workTab|$privateTab|$hideAll|${prefs.drawerDefaultTab}"
+        val key = "${tabBarMode.name}|${groups.joinToString { "${it.name}:${it.order}:${iconKey(it)}" }}|" +
+            "$workTab|$privateTab|$hideAll|${prefs.drawerDefaultTab}|${prefs.drawerTabContent.name}"
         if (key == renderedTabsKey) return
         renderedTabsKey = key
         // Read before the tabs go: selecting one below overwrites it.
@@ -1511,20 +1561,10 @@ class DrawerController(
         // Added unselected: the one-argument addTab selects the first tab
         // it adds, and the listener then overwrote selectedTab mid-rebuild,
         // so every rebuild landed on the default tab.
-        if (!hideAll) {
-            tabs.addTab(tabs.newTab().setText(allTabLabel()).also { it.tag = null }, false)
-        }
-        if (workTab && !tabsOff) {
-            tabs.addTab(tabs.newTab().setText(R.string.drawer_work).also { it.tag = WorkTab }, false)
-        }
-        if (!tabsOff) {
-            groups.forEach { group ->
-                tabs.addTab(tabs.newTab().setText(group.name).also { it.tag = group }, false)
-            }
-        }
-        if (privateTab) {
-            tabs.addTab(tabs.newTab().setText(R.string.drawer_private).also { it.tag = PrivateTab }, false)
-        }
+        addTabs(
+            if (tabsOff) emptyList() else groups, prefs.drawerTabContent,
+            all = !hideAll, work = workTab && !tabsOff, private = privateTab
+        )
         // Held, a tab opens its menu. Every view, reused ones too: TabLayout
         // pools them, and a reused one keeps the listener of the tab it had.
         for (i in 0 until tabs.tabCount) {
@@ -1557,7 +1597,8 @@ class DrawerController(
             prefs.drawerBgOpacity,
             prefs.drawerFastScroller, prefs.drawerBgColor,
             prefs.styleConfig, prefs.paletteSource, prefs.paletteSeed,
-            prefs.searchBarConfig, prefs.drawerTabBar, prefs.drawerTabStyle, prefs.drawerScrubberColor,
+            prefs.searchBarConfig, prefs.drawerTabBar, prefs.drawerTabStyle, prefs.drawerTabAlign,
+            prefs.drawerScrubberColor,
             prefs.drawerActionButtons, prefs.drawerTransition,
             prefs.drawerInfiniteScroll, prefs.drawerPageEffect,
             // The scrubber's visibility and direction follow the sort.
@@ -1655,6 +1696,17 @@ class DrawerController(
         // The group tabs follow the drawer palette too. The Tab type: a
         // short bar under the label (Classic) or a pill behind it (Bubble).
         tabs.setTabTextColors(withAlpha(resolvedForBar.text, TAB_TEXT_ALPHA), resolvedForBar.text)
+        // The default tab glyphs follow the labels' colours; the icon sits
+        // before the label (Label and icon), keeping the bar one line tall.
+        tabs.tabIconTint = android.content.res.ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
+            intArrayOf(resolvedForBar.text, withAlpha(resolvedForBar.text, TAB_TEXT_ALPHA))
+        )
+        tabs.isInlineLabel = true
+        tabs.tabGravity = when (prefs.drawerTabAlign) {
+            DrawerTabAlign.START -> TabLayout.GRAVITY_START
+            DrawerTabAlign.CENTER -> TabLayout.GRAVITY_CENTER
+        }
         // The paused Work tab's card and the pause button, on the drawer's colours.
         binding.drawerWorkPausedTitle.setTextColor(resolvedForBar.text)
         binding.drawerWorkPausedBody.setTextColor(withAlpha(resolvedForBar.text, TAB_TEXT_ALPHA))
@@ -1683,49 +1735,23 @@ class DrawerController(
         for (index in field.childCount - 1 downTo 0) {
             if (field.getChildAt(index).tag == actionTag) field.removeViewAt(index)
         }
-        val actionButtons = DrawerActionButton.decode(prefs.drawerActionButtons)
+        val actionButtons = SearchBarButtons.decode(prefs.drawerActionButtons)
         // Buttons carry their own touch padding, so the field's end inset shrinks.
         field.setPaddingRelative(
             field.paddingStart, field.paddingTop,
             ((if (actionButtons.isEmpty()) FIELD_END_DP else FIELD_END_WITH_BUTTONS_DP) * density).toInt(),
             field.paddingBottom
         )
+        dateButton = null
         actionButtons.forEach { button ->
-            val view = android.widget.ImageButton(context).apply {
-                tag = actionTag
-                setImageResource(
-                    when (button) {
-                        DrawerActionButton.PLAY_STORE -> R.drawable.ic_play_store
-                        DrawerActionButton.SETTINGS -> R.drawable.ic_tab_settings
-                    }
-                )
-                imageTintList = android.content.res.ColorStateList.valueOf(resolvedField.text)
-                background = null
-                // An ImageButton centres its icon at its own 24dp; fit it to
-                // the magnifier's 20dp box instead, so both ends match.
-                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                val pad = (ACTION_BUTTON_PAD_DP * density).toInt()
-                setPadding(pad, pad, pad, pad)
-                contentDescription = context.getString(
-                    when (button) {
-                        DrawerActionButton.PLAY_STORE -> R.string.chip_play_store
-                        DrawerActionButton.SETTINGS -> R.string.settings
-                    }
-                )
-                setOnClickListener {
-                    when (button) {
-                        DrawerActionButton.PLAY_STORE -> runLogged("open Play Store") {
-                            context.packageManager.getLaunchIntentForPackage("com.android.vending")
-                                ?.let(context::startActivity)
-                        }
-                        DrawerActionButton.SETTINGS -> context.startActivity(
-                            android.content.Intent(context, com.supernova.launcher.SettingsActivity::class.java)
-                        )
-                    }
-                }
+            val view = SearchBarButtons.view(context, button, resolvedField.text) {
+                SearchBarButtons.run(context, button)
             }
-            val size = (ACTION_BUTTON_DP * density).toInt()
-            field.addView(view, android.widget.LinearLayout.LayoutParams(size, size))
+            view.tag = actionTag
+            val size = (SearchBarButtons.BUTTON_DP * density).toInt()
+            val width = if (button == SearchBarChip.DATE) ViewGroup.LayoutParams.WRAP_CONTENT else size
+            field.addView(view, LinearLayout.LayoutParams(width, size))
+            if (button == SearchBarChip.DATE) dateButton = view as android.widget.TextView
         }
         // Focusability is the pre-IME interception point: a non-focusable
         // EditText delivers a plain click and never starts an input connection.
@@ -2069,8 +2095,6 @@ class DrawerController(
         // How far in from the list's top and bottom edges its rows fade.
         const val LIST_FADE_DP = 32
         const val FIELD_END_WITH_BUTTONS_DP = 4
-        const val ACTION_BUTTON_DP = 36
-        const val ACTION_BUTTON_PAD_DP = 8
         // item_drawer_app's 4dp side padding, both sides.
         const val TILE_SIDE_PADDING_DP = 8
         const val MAX_COLUMNS = 12
