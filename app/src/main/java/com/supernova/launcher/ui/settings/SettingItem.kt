@@ -20,6 +20,40 @@ sealed class SettingItem {
     // row holds inside itself, which have no row of their own to match.
     open val searchTitles: List<Int> get() = emptyList()
 
+    // Why the row can't do anything now, or null while it can: a row whose
+    // effect waits on a setting elsewhere stays listed, greyed, with a line
+    // saying what to turn on, rather than vanishing (blockedWhen).
+    var blockedBy: (LauncherPrefs) -> Int? = { null }
+        private set
+
+    fun blockedWhen(reason: (LauncherPrefs) -> Int?): SettingItem = apply { blockedBy = reason }
+
+    // The setting that hides the row while it is set one way, or null while
+    // the row shows: the page leaves the row out, and the settings search
+    // still lists it, says what brings it back and leads there (#133).
+    // visibleIf stays for what no setting can change (Android version,
+    // work apps), which the search leaves out.
+    var hiddenBy: (LauncherPrefs) -> HiddenBy? = { null }
+        private set
+
+    fun hiddenWhen(reason: (LauncherPrefs) -> HiddenBy?): SettingItem = apply { hiddenBy = reason }
+
+    fun shownIn(prefs: LauncherPrefs): Boolean = visibleIf(prefs) && hiddenBy(prefs) == null
+
+    // A row's hiding setting: its title, which way it needs to go, and its
+    // page when that is not the row's own (0).
+    class HiddenBy(@StringRes val setting: Int, val needs: Needs, @StringRes val page: Int = 0) {
+        enum class Needs { ON, OFF, OTHER }
+    }
+
+    // More words the settings search finds the row by, space-separated in
+    // one string ("landscape" finds Screen orientation); 0 for none.
+    @StringRes
+    var keywords: Int = 0
+        private set
+
+    fun searchableBy(@StringRes words: Int): SettingItem = apply { keywords = words }
+
     class Toggle(
         @StringRes override val title: Int,
         val get: (LauncherPrefs) -> Boolean,
@@ -170,5 +204,8 @@ class Choice(
     @StringRes val title: Int,
     val labels: List<CharSequence>,
     val selected: Int,
-    val onPick: (Int) -> Unit
+    val onPick: (Int) -> Unit,
+    // A colour per option, drawn as a dot before its label (a colour choice);
+    // a null entry is an option with no colour of its own (Default).
+    val swatches: List<Int?>? = null
 )

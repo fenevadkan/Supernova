@@ -36,6 +36,7 @@ import com.supernova.launcher.data.LauncherItem
 import com.supernova.launcher.data.LauncherPrefs
 import com.supernova.launcher.data.LauncherRepository
 import com.supernova.launcher.data.WorkspaceGeometry
+import com.supernova.launcher.data.isLargeIcon
 import com.supernova.launcher.databinding.ActivityLauncherBinding
 import com.supernova.launcher.runLogged
 import com.supernova.launcher.widget.WidgetResizeFrame
@@ -129,6 +130,8 @@ class LiveDragController(
         // The room a desktop icon needs at its own size, which a smaller
         // cell shrinks it to fit (WorkspaceCanvas.IconFit).
         fun desktopIconNeedPx(prefs: LauncherPrefs): android.util.Size
+        // The same for an icon `span` cells a side (a large icon).
+        fun desktopIconNeedPx(prefs: LauncherPrefs, span: Int): android.util.Size
         fun dockIconBoxPx(prefs: LauncherPrefs): Int
         fun dockIconTopInsetPx(): Int
         fun desktopIconBasePx(): Int
@@ -237,6 +240,10 @@ class LiveDragController(
     // lift instead upgrades the menu to a normal modal popup (makeModal).
     var activeItemPopup: SupernovaPopupMenu? = null
     private var pendingDrag: Pair<View, DragPayload>? = null
+    // A long-press on a locked layout that would have picked the item up: the
+    // first move off it says why nothing follows the finger. NaN when none.
+    private var lockedProbeX = Float.NaN
+    private var lockedProbeY = Float.NaN
     private var pendingDragStartX = Float.NaN
     private var pendingDragStartY = Float.NaN
     private var dragSourceView: View? = null
@@ -404,6 +411,7 @@ class LiveDragController(
                 return true
             }
         }
+        if (!lockedProbeX.isNaN()) watchLockedDrag(ev)
         // An armed long-press gesture (menu already showing): movement past
         // the threshold turns it into the live drag; a lift keeps the menu
         // and makes it modal. Runs before every early return - drawer items
@@ -621,6 +629,10 @@ class LiveDragController(
         // by accident.
         if (desktopLocked || !draggable) {
             activeItemPopup?.makeModal()
+            if (desktopLocked && draggable) {
+                lockedProbeX = pressRawX
+                lockedProbeY = pressRawY
+            }
             return
         }
         pendingDrag = anchor to payload
@@ -658,11 +670,39 @@ class LiveDragController(
         return best
     }
 
+    // A drop that landed confirms; one that didn't rejects (Android 11 on has
+    // both; before it only a landing ticks). The system's touch-feedback
+    // setting still decides whether anything is felt.
+    private fun dropHaptic(landed: Boolean) {
+        val constant = when {
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R ->
+                if (landed) {
+                    android.view.HapticFeedbackConstants.CONFIRM
+                } else {
+                    android.view.HapticFeedbackConstants.REJECT
+                }
+            landed -> android.view.HapticFeedbackConstants.VIRTUAL_KEY
+            else -> return
+        }
+        binding.root.performHapticFeedback(constant)
+    }
+
+    private fun watchLockedDrag(ev: MotionEvent) {
+        val moved = ev.actionMasked == MotionEvent.ACTION_MOVE &&
+            kotlin.math.hypot((ev.rawX - lockedProbeX).toDouble(), (ev.rawY - lockedProbeY).toDouble()) >
+            context.dp(LOCKED_DRAG_DP)
+        if (moved) DesktopLock.refused(context, viewModel)
+        if (moved || ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            lockedProbeX = Float.NaN
+            lockedProbeY = Float.NaN
+        }
+    }
+
     // A widget long-pressed in the add sheet: arm it like an item, with the
     // preview as the picture. Its spans are the provider's defaults, the same
     // ones a tap-to-add would use.
     fun armWidget(info: AppWidgetProviderInfo, preview: View): Boolean {
-        if (desktopLocked) return false
+        if (DesktopLock.refused(context, viewModel)) return false
         val prefs = viewModel.state.value.prefs
         val (cellWidth, cellHeight) = host.currentCellSizePx()
         val spans = WidgetSizing.defaultSpans(context, info, cellWidth, cellHeight, prefs.gridCols, prefs.gridRows)
@@ -673,7 +713,7 @@ class LiveDragController(
     // A shortcut row long-pressed in the add sheet: lifted as its icon, an
     // icon-sized drop. What it becomes is only known once its flow has run.
     fun armShortcut(target: ShortcutTarget, icon: View): Boolean {
-        if (desktopLocked) return false
+        if (DesktopLock.refused(context, viewModel)) return false
         arm(icon, DragPayload.NewShortcut(target), menu = null)
         return true
     }
@@ -1155,7 +1195,8 @@ class LiveDragController(
         if (!wraps && next in 0 until adapter.itemCount && !adapter.isAddPage(next)) {
             drops.cancelReorderPreview(animate = false)
             hideDragGrid(animate = true)
-            pager.setCurrentItem(next, true)
+            pager.setCurrentItem(next, Animations.scrollPages(viewModel.state.value.prefs))
+            pager.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             return true
         }
         // Off the end. The new page is asked for once; the model emission
@@ -1197,6 +1238,7 @@ class LiveDragController(
                 drops.cancelReorderPreview(animate = true)
                 target.view.setBackgroundColor(0)
                 dropZoneActions[target.view]?.invoke(payload)
+                dropHaptic(landed = true)
                 val rect = target.view.screenRect()
                 dragLayer.consume(rect.exactCenterX(), rect.exactCenterY(), settleMs) { finishDrag(accepted = true) }
                 return
@@ -1205,6 +1247,7 @@ class LiveDragController(
             is DragTarget.Dock -> if (dockable(payload) && !desktopLocked) {
                 drops.cancelReorderPreview(animate = false)
                 if (host.handleDropToDock(payload, target.rank, merge)) {
+                    dropHaptic(landed = true)
                     markSettling(payload)
                     dragLayer.settle(dockIconRect(target.slot, prefs), settleMs) { finishDrag(accepted = true) }
                     return
@@ -1218,6 +1261,7 @@ class LiveDragController(
                         payload, target.page, p[0].toInt(), p[1].toInt(), p[2], p[3], p[4], p[5]
                     )
                     if (accepted) {
+                        dropHaptic(landed = true)
                         markSettling(payload)
                         dragLayer.settle(workspaceSettleRect(target.canvas, payload, p, prefs), settleMs) {
                             finishDrag(accepted = true)
@@ -1229,6 +1273,14 @@ class LiveDragController(
             DragTarget.None -> Unit
         }
         drops.cancelReorderPreview(animate = true)
+        dropHaptic(landed = false)
+        // A widget let go over the dock: findDragTarget keeps it off the dock,
+        // and the fly-back alone didn't say why.
+        val overDock = binding.dockBar.isShown && binding.dockBar.screenRect().contains(rawX.toInt(), rawY.toInt())
+        if (isWidgetPayload(payload) && overDock) {
+            android.widget.Toast.makeText(context, R.string.widget_not_in_dock, android.widget.Toast.LENGTH_SHORT)
+                .show()
+        }
         // Nowhere to land: an item flies back to where it came from; a drawer
         // app or a picker widget has no home on screen and just fades. An app
         // taken out of a folder goes back into the folder's icon, the card it
@@ -1349,15 +1401,29 @@ class LiveDragController(
         // icon's item, taller or wider than a cell, does in the outer rows
         // and columns; the icon sits at the top of the item. In a cell too
         // small for it the icon is shrunk to fit, and lands at that size.
-        val need = host.desktopIconNeedPx(prefs)
+        // A large icon lands on the 2x2 cells the hover outlined, at its
+        // own size: it brings its own view.
+        val (span, cells) = largeIconCells(payload, p)
+        val need = host.desktopIconNeedPx(prefs, span)
         val fit = iconFitScale(
-            cellSize(canvas.width, prefs.gridCols), cellSize(canvas.height, prefs.gridRows), need.width, need.height
+            cellSize(canvas.width, prefs.gridCols) * span, cellSize(canvas.height, prefs.gridRows) * span,
+            need.width, need.height
         )
-        val box = (host.desktopIconBoxPx(prefs) * fit).roundToInt()
+        val box = (host.desktopIconBoxPx(prefs) * span * fit).roundToInt()
         val item = desktopItemFrame(prefs, box, fit)
-        val left = iconOrigin(p[2], canvas.width, item.width) + item.iconLeft
-        val top = iconOrigin(p[3], canvas.height, item.height) + item.iconTop
+        val centerX = cells?.let { (it.left + it.right) / 2f / prefs.gridCols } ?: p[2]
+        val centerY = cells?.let { (it.top + it.bottom) / 2f / prefs.gridRows } ?: p[3]
+        val left = iconOrigin(centerX, canvas.width, item.width) + item.iconLeft
+        val top = iconOrigin(centerY, canvas.height, item.height) + item.iconTop
         return RectF(left.toFloat(), top.toFloat(), (left + box).toFloat(), (top + box).toFloat())
+    }
+
+    // A dragged large icon's span and the cells it lands on; 1 and none for
+    // anything else.
+    private fun largeIconCells(payload: DragPayload, p: FloatArray): Pair<Int, WorkspaceGeometry.CellRect?> {
+        val item = (payload as? DragPayload.ExistingItem)?.let { itemById(it.itemId) }?.takeIf { it.isLargeIcon }
+            ?: return 1 to null
+        return item.spanX to drops.hoverTargetRect(payload, p[0].toInt(), p[1].toInt(), p[4], p[5])?.first
     }
 
     // A desktop item's size, and where its icon box sits inside it.
@@ -1623,6 +1689,8 @@ class LiveDragController(
         // after a short hover (then keeps flipping while the finger stays).
         private const val DRAG_PICKUP_SCALE = 1.15f
         private const val DRAG_PICKUP_MS = 120L
+        // How far a finger on a locked layout moves before it hears why the item stays.
+        private const val LOCKED_DRAG_DP = 24
         private const val DRAG_SETTLE_MS = 220L
         // Half-width of a dock icon's merge zone, as a share of its slot.
         private const val DOCK_MERGE_ZONE = 0.3f

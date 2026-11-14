@@ -12,6 +12,7 @@ import com.supernova.launcher.data.LauncherPrefs
 import com.supernova.launcher.databinding.ItemFeedCalendarBinding
 import com.supernova.launcher.databinding.ItemFeedContactsBinding
 import com.supernova.launcher.databinding.ItemFeedMediaBinding
+import com.supernova.launcher.ui.textSizeOf
 import com.supernova.launcher.ui.theme.Styles
 import com.supernova.launcher.ui.theme.SurfaceId
 
@@ -23,22 +24,22 @@ object CardPreviews {
 
     fun builtIn(kind: BuiltInCard, parent: ViewGroup, prefs: LauncherPrefs): View {
         val context = parent.context
-        val popup = Styles.resolve(context, prefs).of(SurfaceId.POPUP)
+        val look = Styles.resolve(context, prefs).of(SurfaceId.CARDS)
         val inflater = LayoutInflater.from(context)
         val density = context.resources.displayMetrics.density
         return when (kind) {
             BuiltInCard.MEDIA -> ItemFeedMediaBinding.inflate(inflater, parent, false).apply {
-                tint(root, popup.surface)
-                mediaTitle.setTextColor(popup.text)
-                mediaArtist.setTextColor(popup.text)
+                tint(root, look.surface)
+                mediaTitle.setTextColor(look.text)
+                mediaArtist.setTextColor(look.text)
                 mediaTitle.setText(R.string.card_sample_title)
                 mediaArtist.setText(R.string.card_sample_artist)
                 mediaArt.visibility = View.GONE
                 mediaPlayPause.setImageResource(R.drawable.ic_media_play)
             }.root
             BuiltInCard.CALENDAR -> ItemFeedCalendarBinding.inflate(inflater, parent, false).apply {
-                tint(root, popup.surface)
-                calendarHeader.setTextColor(popup.accent)
+                tint(root, look.surface)
+                calendarHeader.setTextColor(look.accent)
                 calendarPermissionText.visibility = View.GONE
                 calendarGrantButton.visibility = View.GONE
                 calendarEvents.removeAllViews()
@@ -49,7 +50,7 @@ object CardPreviews {
                 ).forEach { line ->
                     calendarEvents.addView(TextView(context).apply {
                         text = line
-                        setTextColor(popup.text)
+                        setTextColor(look.text)
                         textSize = 14f
                         maxLines = 1
                         setPadding(0, pad, 0, pad)
@@ -57,8 +58,8 @@ object CardPreviews {
                 }
             }.root
             BuiltInCard.CONTACTS -> ItemFeedContactsBinding.inflate(inflater, parent, false).apply {
-                tint(root, popup.surface)
-                contactsHeader.setTextColor(popup.accent)
+                tint(root, look.surface)
+                contactsHeader.setTextColor(look.accent)
                 contactsPermissionText.visibility = View.GONE
                 contactsGrantButton.visibility = View.GONE
                 contactsRow.removeAllViews()
@@ -68,11 +69,11 @@ object CardPreviews {
                         TextView(context).apply {
                             text = initial.toString()
                             gravity = Gravity.CENTER
-                            textSize = 18f
-                            setTextColor(popup.text)
+                            textSizeOf(R.dimen.text_title)
+                            setTextColor(look.text)
                             background = GradientDrawable().apply {
                                 shape = GradientDrawable.OVAL
-                                setColor((0x33 shl 24) or (popup.accent and 0xFFFFFF))
+                                setColor((0x33 shl 24) or (look.accent and 0xFFFFFF))
                             }
                         },
                         LinearLayout.LayoutParams(size, size).apply { rightMargin = (10 * density).toInt() }

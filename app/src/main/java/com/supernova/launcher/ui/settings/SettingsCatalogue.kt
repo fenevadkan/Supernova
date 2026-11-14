@@ -1,7 +1,7 @@
 package com.supernova.launcher.ui.settings
 
+import androidx.core.graphics.toColorInt
 import android.content.Context
-import androidx.core.net.toUri
 import com.supernova.launcher.R
 import com.supernova.launcher.SupernovaApp
 import com.supernova.launcher.data.IconGlass
@@ -10,7 +10,6 @@ import com.supernova.launcher.data.LauncherPrefs
 import com.supernova.launcher.data.LockMethod
 import com.supernova.launcher.data.Pref
 import com.supernova.launcher.data.SearchWindowMode
-import com.supernova.launcher.runLogged
 import kotlin.math.roundToInt
 import com.supernova.launcher.ui.BadgePosition
 import com.supernova.launcher.ui.BadgeStyle
@@ -74,6 +73,7 @@ object SettingsCatalogue {
         val pickDesktopGrid: () -> Unit = {},
         val editThemeSchedule: () -> Unit = {},
         val showLicense: () -> Unit = {},
+        val showWhatsNew: () -> Unit = {},
         val editGesture: (Gesture) -> Unit = {},
         val pickLockMethod: () -> Unit = {},
         val editHiddenApps: () -> Unit = {},
@@ -99,6 +99,11 @@ object SettingsCatalogue {
         // Fired only on a genuine user enable, so the activity can route to
         // the notification-access screen when permission is missing.
         val onBadgesEnabled: () -> Unit = {},
+        val onPopupNotificationsEnabled: () -> Unit = {},
+        // Gestures that need the accessibility service, and the device-admin
+        // lock method: why, then the system screen.
+        val explainAccessibility: () -> Unit = {},
+        val requestDeviceAdmin: () -> Unit = {},
         // Fired on a genuine user enable, so the activity can run the
         // READ_CONTACTS runtime request when it isn't granted yet.
         val onSearchContactsEnabled: () -> Unit = {},
@@ -132,6 +137,16 @@ object SettingsCatalogue {
         private val viewModel: LauncherViewModel,
         private val actions: Actions
     ) {
+        // Under a switch that needs notification access: shown while the
+        // switch is on and the access is missing, and a tap goes to grant it.
+        fun needsNotificationAccess(
+            @StringRes summary: Int,
+            on: (LauncherPrefs) -> Boolean
+        ): SettingItem.Row =
+            warningRow(context, R.string.feed_media_needs_access, summary, actions.openNotificationAccess) {
+                on(it) && !com.supernova.launcher.notification.SupernovaNotificationListener.isEnabled(context)
+            }
+
         // One of `values`, each named by a string resource; the subtitle is
         // the current value's name unless given.
         fun <T> choice(
@@ -162,10 +177,11 @@ object SettingsCatalogue {
 
         // Curated swatches for v1; a free hex picker arrives with theming. An
         // unknown stored color (from a backup) reads as Default.
+        // The row shows the colour in force, its dot and its name.
         fun color(
             @StringRes title: Int,
             current: (LauncherPrefs) -> String,
-            subtitle: (LauncherPrefs) -> CharSequence? = { null },
+            subtitle: (LauncherPrefs) -> CharSequence? = { context.getString(curatedFor(current(it)).first) },
             visibleIf: (LauncherPrefs) -> Boolean = { true },
             onPick: (String) -> Unit
         ): SettingItem.Row = SettingItem.Row(
@@ -173,11 +189,18 @@ object SettingsCatalogue {
             subtitle = subtitle,
             onClick = {
                 val now = current(viewModel.state.value.prefs)
-                val selected = CURATED_COLORS.indexOfFirst { it.second.equals(now, ignoreCase = true) }.coerceAtLeast(0)
-                pick(title, CURATED_COLORS, selected, { context.getString(it.first) }) { onPick(it.second) }
+                actions.pickChoice(
+                    Choice(
+                        title, CURATED_COLORS.map { context.getString(it.first) },
+                        CURATED_COLORS.indexOf(curatedFor(now)), { onPick(CURATED_COLORS[it].second) },
+                        swatches = CURATED_COLORS.map { swatchOf(it.second) }
+                    )
+                )
             },
-            visibleIf = visibleIf
+            visibleIf = visibleIf,
+            look = SettingItem.RowLook(swatch = { swatchOf(current(it)) })
         )
+
 
         // Shows the choice now: for rows built by hand and for controls that
         // are not rows (the Label card's font).
@@ -188,23 +211,19 @@ object SettingsCatalogue {
             label: (T) -> CharSequence,
             onPick: (T) -> Unit
         ) {
-            actions.pickChoice(Choice(title, values.map(label), selected) { onPick(values[it]) })
+            actions.pickChoice(Choice(title, values.map(label), selected, { onPick(values[it]) }))
         }
 
         // A gesture's row: its name, what it does now (a launch shows its
         // target), and the action picker on tap.
-        fun gestureRow(
-            gesture: Gesture,
-            visibleIf: (LauncherPrefs) -> Boolean = { true }
-        ): SettingItem.Row = SettingItem.Row(
+        fun gestureRow(gesture: Gesture): SettingItem.Row = SettingItem.Row(
             EnumLabels.of(gesture),
             subtitle = { prefs ->
                 val binding = GestureDefaults.decode(prefs.gestureBindings)[gesture]
                     ?: com.supernova.launcher.gesture.GestureBinding(GestureAction.NONE)
                 binding.label ?: context.getString(EnumLabels.of(binding.action))
             },
-            onClick = { actions.editGesture(gesture) },
-            visibleIf = visibleIf
+            onClick = { actions.editGesture(gesture) }
         )
 
         // Every row on a search bar's page edits one field of its slice of
@@ -241,6 +260,70 @@ object SettingsCatalogue {
             { context.getString(EnumLabels.of(it)) }, onPick
         )
     }
+
+    // The accent: its dot on the row, and every option's dot in the menu.
+    private fun accentRow(context: Context, viewModel: LauncherViewModel, actions: Actions): SettingItem.Row {
+        val accents = AccentColor.entries
+        return SettingItem.Row(
+            R.string.accent_color,
+            subtitle = { context.getString(EnumLabels.of(it.accentColor)) },
+            onClick = {
+                actions.pickChoice(
+                    Choice(
+                        R.string.accent_color, accents.map { context.getString(EnumLabels.of(it)) },
+                        accents.indexOf(viewModel.state.value.prefs.accentColor),
+                        { viewModel.set(Pref.accentColor, accents[it]) },
+                        swatches = accents.map { context.getColor(it.colorRes) }
+                    )
+                )
+            },
+            look = SettingItem.RowLook(
+                R.drawable.ic_style_accent, swatch = { context.getColor(it.accentColor.colorRes) }
+            )
+        )
+    }
+
+    // A stored colour's curated entry; one not in the list reads as Default.
+    private const val ANDROID_16 = 36
+
+    // The reasons rows on other pages are greyed (SettingItem.blockedWhen).
+    private val animationsOff: (LauncherPrefs) -> Int? = {
+        R.string.needs_animations.takeIf { _ -> it.disableAnimations }
+    }
+    private val feedOff: (LauncherPrefs) -> Int? = { R.string.needs_feed.takeUnless { _ -> it.feedEnabled } }
+
+    // The settings rows hide behind (SettingItem.hiddenWhen), shared by
+    // every row that waits on them.
+    private val animationsHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        needsOff(R.string.disable_animations, it.disableAnimations)
+    }
+    private val dockHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        needsOn(R.string.dock_enabled, !it.dockEnabled)
+    }
+    private val dockBgHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        dockHidden(it) ?: needsOn(R.string.dock_bg_style, it.dockBgStyle == DockBgStyle.NONE)
+    }
+    private val feedHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        needsOn(R.string.feed_enabled, !it.feedEnabled)
+    }
+    private val badgesHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = { needsOn(R.string.badges, !it.badges) }
+    // Home's Infinite scroll, on its own page, stands in for swipe left and right.
+    private val infiniteScrollHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        needsOff(R.string.infinite_scroll, it.infiniteScroll, R.string.settings_section_home)
+    }
+    private val desktopGlassHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        dependsOn(R.string.icon_glass, IconGlass.fromName(SearchBarPrefs.desktopBar(it).glass) != IconGlass.OFF)
+    }
+    private val drawerGlassHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+        dependsOn(R.string.icon_glass, IconGlass.fromName(SearchBarPrefs.drawerBar(it).glass) != IconGlass.OFF)
+    }
+
+    private fun curatedFor(stored: String): Pair<Int, String> =
+        CURATED_COLORS.firstOrNull { it.second.equals(stored, ignoreCase = true) } ?: CURATED_COLORS.first()
+
+    // Its dot; none for Default.
+    private fun swatchOf(hex: String): Int? =
+        hex.takeIf { it.isNotEmpty() }?.let { runCatching { it.toColorInt() }.getOrNull() }
 
     val CURATED_COLORS = listOf(
         R.string.color_default to "",
@@ -322,7 +405,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.show_scrims,
                     get = { it.showScrims },
-                    set = { viewModel.set(Pref.showScrims, it) }
+                    set = { viewModel.set(Pref.showScrims, it) },
+                    subtitle = R.string.show_scrims_summary
                 ),
                 SettingItem.Toggle(
                     R.string.auto_add_apps,
@@ -339,24 +423,22 @@ object SettingsCatalogue {
                 ),
                 rows.choice(
                     R.string.animation_speed, com.supernova.launcher.ui.AnimationSpeed.entries,
-                    { it.animationSpeed }, { EnumLabels.of(it) },
-                    visibleIf = { !it.disableAnimations }
-                ) { viewModel.set(Pref.animationSpeed, it) },
+                    { it.animationSpeed }, { EnumLabels.of(it) }
+                ) { viewModel.set(Pref.animationSpeed, it) }.hiddenWhen(animationsHidden),
                 rows.choice(
                     R.string.scroll_effect, ScrollEffect.entries,
-                    { it.scrollEffect }, { EnumLabels.of(it) },
-                    visibleIf = { !it.disableAnimations }
-                ) { viewModel.setScrollEffect(it) },
+                    { it.scrollEffect }, { EnumLabels.of(it) }
+                ) { viewModel.setScrollEffect(it) }.hiddenWhen(animationsHidden),
                 rows.choice(
                     R.string.launch_animation, LaunchAnimation.entries,
                     { it.launchAnimation }, { EnumLabels.of(it) },
-                    visibleIf = { !it.disableAnimations },
                     onPick = { viewModel.set(Pref.launchAnimation, it) }
-                ),
+                ).hiddenWhen(animationsHidden),
                 SettingItem.Toggle(
                     R.string.drop_targets,
                     get = { it.dropTargets },
-                    set = { viewModel.set(Pref.dropTargets, it) }
+                    set = { viewModel.set(Pref.dropTargets, it) },
+                    subtitle = R.string.drop_targets_summary
                 ),
                 SettingItem.Toggle(
                     R.string.undo_remove,
@@ -372,9 +454,10 @@ object SettingsCatalogue {
                 ),
                 rows.choice(
                     R.string.status_bar_icons, StatusBarIcons.entries,
-                    { it.darkStatusIcons }, { EnumLabels.of(it) },
-                    visibleIf = { !it.hideStatusBar }
-                ) { viewModel.set(Pref.darkStatusIcons, it) },
+                    { it.darkStatusIcons }, { EnumLabels.of(it) }
+                ) { viewModel.set(Pref.darkStatusIcons, it) }.hiddenWhen {
+                    needsOff(R.string.hide_status_bar, it.hideStatusBar)
+                },
                 SettingItem.Toggle(
                     R.string.transparent_status,
                     get = { it.transparentStatus },
@@ -387,8 +470,17 @@ object SettingsCatalogue {
                 ),
                 rows.choice(
                     R.string.home_orientation, com.supernova.launcher.ui.HomeOrientation.entries,
-                    { com.supernova.launcher.ui.HomeOrientation.fromPrefs(it) }, { EnumLabels.of(it) }
-                ) { viewModel.set(Pref.homeOrientation, it.name) },
+                    { com.supernova.launcher.ui.HomeOrientation.fromPrefs(it) },
+                    // Default is portrait on a phone and rotates on a tablet.
+                    { EnumLabels.of(it, com.supernova.launcher.data.DeviceProfile.isWide(context)) }
+                ) { viewModel.set(Pref.homeOrientation, it.name) }.blockedWhen {
+                    // Android 16 turns a large screen with the system's
+                    // rotation and ignores what an app asks for.
+                    R.string.orientation_system_owned.takeIf { _ ->
+                        android.os.Build.VERSION.SDK_INT >= ANDROID_16 &&
+                            com.supernova.launcher.data.DeviceProfile.isWide(context)
+                    }
+                }.searchableBy(R.string.home_orientation_keywords),
                 SettingItem.Header(R.string.group_pages),
                 rows.choice(
                     R.string.page_indicator, IndicatorStyle.entries,
@@ -396,20 +488,21 @@ object SettingsCatalogue {
                 ) { viewModel.set(Pref.pageIndicatorStyle, it) },
                 // Default follows the labels' color.
                 rows.color(
-                    R.string.page_indicator_color, { it.pageIndicatorColor },
-                    visibleIf = { it.pageIndicatorStyle != IndicatorStyle.NONE }
-                ) { viewModel.set(Pref.pageIndicatorColor, it) },
+                    R.string.page_indicator_color, { it.pageIndicatorColor }
+                ) { viewModel.set(Pref.pageIndicatorColor, it) }.hiddenWhen {
+                    dependsOn(R.string.page_indicator, it.pageIndicatorStyle == IndicatorStyle.NONE)
+                },
                 SettingItem.Toggle(
                     R.string.page_indicator_auto_hide,
                     get = { it.pageIndicatorAutoHide },
                     set = { viewModel.set(Pref.pageIndicatorAutoHide, it) },
-                    visibleIf = { it.pageIndicatorStyle != IndicatorStyle.NONE },
                     subtitle = R.string.page_indicator_auto_hide_summary
-                ),
+                ).hiddenWhen { dependsOn(R.string.page_indicator, it.pageIndicatorStyle == IndicatorStyle.NONE) },
                 SettingItem.Toggle(
                     R.string.infinite_scroll,
                     get = { it.infiniteScroll },
-                    set = { viewModel.set(Pref.infiniteScroll, it) }
+                    set = { viewModel.set(Pref.infiniteScroll, it) },
+                    subtitle = R.string.infinite_scroll_summary
                 ),
                 SettingItem.Toggle(
                     R.string.remove_empty_pages,
@@ -445,7 +538,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.overlap_when_placing,
                     get = { it.overlapWhenPlacing },
-                    set = { viewModel.set(Pref.overlapWhenPlacing, it) }
+                    set = { viewModel.set(Pref.overlapWhenPlacing, it) },
+                    subtitle = R.string.overlap_when_placing_summary
                 ),
                 SettingItem.Slider(
                     R.string.widget_padding,
@@ -480,49 +574,58 @@ object SettingsCatalogue {
                     get = { it.dockCount },
                     set = { viewModel.set(Pref.dockCount, it) },
                     display = { it.toString() },
-                    preview = { p, v -> p.copy(dockCount = v) },
-                    visibleIf = { it.dockEnabled }
-                ),
+                    preview = { p, v -> p.copy(dockCount = v) }
+                ).hiddenWhen(dockHidden),
                 SettingItem.Slider(
                     R.string.dock_pages,
                     min = 1, max = 3,
                     get = { it.dockPages },
                     set = { viewModel.set(Pref.dockPages, it) },
-                    display = { it.toString() },
-                    visibleIf = { it.dockEnabled }
-                ),
-                rows.choice(
-                    R.string.dock_bg_style, DockBgStyle.entries,
-                    { it.dockBgStyle }, { EnumLabels.of(it) },
-                    visibleIf = { it.dockEnabled }
-                ) { viewModel.set(Pref.dockBgStyle, it) },
+                    display = { it.toString() }
+                ).hiddenWhen(dockHidden),
+                SettingItem.Toggle(
+                    R.string.dock_bg_style,
+                    get = { it.dockBgStyle != DockBgStyle.NONE },
+                    set = { viewModel.set(Pref.dockBgStyle, if (it) DockBgStyle.ROUNDED else DockBgStyle.NONE) }
+                ).hiddenWhen(dockHidden),
                 SettingItem.Slider(
                     R.string.dock_bg_opacity,
                     min = 0, max = 100,
                     step = 5,
-                    get = { (it.dockBgOpacity * 100f).roundToInt() },
-                    set = { viewModel.set(Pref.dockBgOpacity, it / 100f) },
+                    get = { SurfaceOpacity.effective(it, SurfaceId.DOCK) },
+                    set = { SurfaceOpacity.set(viewModel, SurfaceId.DOCK, it) },
                     display = { context.getString(R.string.opacity_percent, it) },
-                    preview = { p, v -> p.copy(dockBgOpacity = v / 100f) },
-                    visibleIf = { it.dockEnabled && it.dockBgStyle != DockBgStyle.NONE }
-                ),
+                    preview = { p, v -> SurfaceOpacity.preview(p, SurfaceId.DOCK, v) }
+                ).hiddenWhen(dockBgHidden),
+                SettingItem.Slider(
+                    R.string.dock_bg_radius,
+                    min = 0, max = 24,
+                    get = { if (it.dockBgStyle == DockBgStyle.SQUARE) 0 else it.dockBgRadius },
+                    // A square dock from before the switch becomes a rounded
+                    // one at the radius picked.
+                    set = {
+                        viewModel.setAll(
+                            listOf(
+                                com.supernova.launcher.data.PrefWrite(Pref.dockBgRadius, it),
+                                com.supernova.launcher.data.PrefWrite(Pref.dockBgStyle, DockBgStyle.ROUNDED)
+                            )
+                        )
+                    },
+                    display = { context.getString(R.string.padding_dp_value, it) },
+                    preview = { p, v -> p.copy(dockBgRadius = v, dockBgStyle = DockBgStyle.ROUNDED) }
+                ).hiddenWhen(dockBgHidden),
                 SettingItem.Toggle(
                     R.string.dock_bg_behind_nav,
                     get = { it.dockBgBehindNav },
-                    set = { viewModel.set(Pref.dockBgBehindNav, it) },
-                    visibleIf = { it.dockEnabled && it.dockBgStyle != DockBgStyle.NONE }
-                ),
+                    set = { viewModel.set(Pref.dockBgBehindNav, it) }
+                ).hiddenWhen(dockBgHidden),
                 SettingItem.Toggle(
                     R.string.dock_bg_padding,
                     get = { it.dockBgPadding },
                     set = { viewModel.set(Pref.dockBgPadding, it) },
                     // Behind-nav already forces the slab full-bleed, so the
                     // inset choice only means something without it.
-                    visibleIf = {
-                        it.dockEnabled && !it.dockBgBehindNav &&
-                            it.dockBgStyle != DockBgStyle.NONE
-                    }
-                ),
+                ).hiddenWhen { dockBgHidden(it) ?: needsOff(R.string.dock_bg_behind_nav, it.dockBgBehindNav) },
                 SettingItem.Toggle(
                     R.string.dock_labels,
                     get = { it.dockLabels },
@@ -530,17 +633,15 @@ object SettingsCatalogue {
                     // Not tied to the desktop's labels: the dock shows its
                     // own whatever those are, and hiding the switch with
                     // them left no way to turn the dock's off.
-                    visibleIf = { it.dockEnabled }
-                ),
+                ).hiddenWhen(dockHidden),
                 *labelOverrideItems(context, viewModel, actions, LabelContext.DOCK) {
-                    it.dockEnabled && it.dockLabels
+                    dockHidden(it) ?: needsOn(R.string.dock_labels, !it.dockLabels)
                 }.toTypedArray(),
                 SettingItem.Toggle(
                     R.string.dock_match_desktop,
                     get = { it.dockMatchDesktop },
-                    set = { viewModel.set(Pref.dockMatchDesktop, it) },
-                    visibleIf = { it.dockEnabled }
-                ),
+                    set = { viewModel.set(Pref.dockMatchDesktop, it) }
+                ).hiddenWhen(dockHidden),
                 SettingItem.Slider(
                     R.string.dock_icon_scale,
                     min = 70, max = 200,
@@ -548,52 +649,46 @@ object SettingsCatalogue {
                     get = { (it.dockIconScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.dockIconScale, it / 100f) },
                     display = { context.getString(R.string.opacity_percent, it) },
-                    preview = { p, v -> p.copy(dockIconScale = v / 100f) },
-                    visibleIf = { it.dockEnabled && !it.dockMatchDesktop }
-                ),
+                    preview = { p, v -> p.copy(dockIconScale = v / 100f) }
+                ).hiddenWhen { dockHidden(it) ?: needsOff(R.string.dock_match_desktop, it.dockMatchDesktop) },
                 SettingItem.Slider(
                     R.string.dock_padding_h,
                     min = 0, max = 48,
                     step = 2,
                     get = { it.dockPaddingH },
                     set = { viewModel.set(Pref.dockPaddingH, it) },
-                    display = { context.getString(R.string.padding_dp_value, it) },
-                    visibleIf = { it.dockEnabled }
-                ),
+                    display = { context.getString(R.string.padding_dp_value, it) }
+                ).hiddenWhen(dockHidden),
                 SettingItem.Slider(
                     R.string.dock_padding_v,
                     min = 0, max = 48,
                     step = 2,
                     get = { it.dockPaddingV },
                     set = { viewModel.set(Pref.dockPaddingV, it) },
-                    display = { context.getString(R.string.padding_dp_value, it) },
-                    visibleIf = { it.dockEnabled }
-                ),
+                    display = { context.getString(R.string.padding_dp_value, it) }
+                ).hiddenWhen(dockHidden),
                 SettingItem.Accordion(R.string.advanced),
                 SettingItem.Toggle(
                     R.string.dock_infinite_scroll,
                     get = { it.dockInfiniteScroll },
-                    set = { viewModel.set(Pref.dockInfiniteScroll, it) },
-                    visibleIf = { it.dockEnabled && it.dockPages > 1 }
-                ),
+                    set = { viewModel.set(Pref.dockInfiniteScroll, it) }
+                ).hiddenWhen { dockHidden(it) ?: dependsOn(R.string.dock_pages, it.dockPages <= 1) },
                 SettingItem.Toggle(
                     R.string.dock_remember_position,
                     get = { it.dockRememberPosition },
-                    set = { viewModel.set(Pref.dockRememberPosition, it) },
-                    visibleIf = { it.dockEnabled && it.dockPages > 1 }
-                ),
+                    set = { viewModel.set(Pref.dockRememberPosition, it) }
+                ).hiddenWhen { dockHidden(it) ?: dependsOn(R.string.dock_pages, it.dockPages <= 1) },
                 SettingItem.Toggle(
                     R.string.dock_overlay,
                     get = { it.dockOverlay },
                     set = { viewModel.set(Pref.dockOverlay, it) },
-                    visibleIf = { it.dockEnabled }
-                ),
+                    subtitle = R.string.dock_overlay_summary
+                ).hiddenWhen(dockHidden),
                 SettingItem.Toggle(
                     R.string.dock_auto_close,
                     get = { it.dockAutoClose },
-                    set = { viewModel.set(Pref.dockAutoClose, it) },
-                    visibleIf = { it.dockEnabled && it.dockOverlay }
-                )
+                    set = { viewModel.set(Pref.dockAutoClose, it) }
+                ).hiddenWhen { dockHidden(it) ?: needsOn(R.string.dock_overlay, !it.dockOverlay) }
             )
         ),
         SettingsSection(
@@ -617,7 +712,7 @@ object SettingsCatalogue {
                 rows.choice(
                     R.string.drawer_transition, com.supernova.launcher.ui.DrawerTransition.entries,
                     { it.drawerTransition }, { EnumLabels.of(it) }
-                ) { viewModel.set(Pref.drawerTransition, it) },
+                ) { viewModel.set(Pref.drawerTransition, it) }.blockedWhen(animationsOff),
                 SettingItem.Row(
                     R.string.drawer_grid,
                     subtitle = { prefs ->
@@ -628,31 +723,41 @@ object SettingsCatalogue {
                             prefs.drawerColumns.takeIf { it > 0 }?.toString() ?: auto
                         )
                     },
-                    onClick = actions.pickDrawerGrid,
-                    visibleIf = { it.drawerStyle != DrawerStyle.VERTICAL_LIST }
-                ),
+                    onClick = actions.pickDrawerGrid
+                ).hiddenWhen { dependsOn(R.string.drawer_style, it.drawerStyle == DrawerStyle.VERTICAL_LIST) },
                 SettingItem.Toggle(
                     R.string.drawer_auto_keyboard,
                     get = { it.drawerAutoKeyboard },
-                    set = { viewModel.set(Pref.drawerAutoKeyboard, it) },
-                    visibleIf = { SearchBarConfig.decode(it.searchBarConfig).drawer.enabled }
-                ),
-                // Open App Drawer options, offered only while a swipe opens
-                // the drawer.
+                    set = { viewModel.set(Pref.drawerAutoKeyboard, it) }
+                ).blockedWhen {
+                    R.string.needs_drawer_search_bar.takeUnless { _ ->
+                        SearchBarConfig.decode(it.searchBarConfig).drawer.enabled
+                    }
+                },
+                // Open App Drawer options, live only while a swipe opens the
+                // drawer (and, for the arrow, a dock to draw it on).
                 SettingItem.Toggle(
                     R.string.drawer_swipe_indicator,
                     get = { it.drawerSwipeIndicator },
                     set = { viewModel.set(Pref.drawerSwipeIndicator, it) },
-                    visibleIf = { GestureDefaults.swipeUpOpensDrawer(it.gestureBindings) && it.dockEnabled },
                     subtitle = R.string.drawer_swipe_indicator_summary
-                ),
+                ).blockedWhen {
+                    when {
+                        !GestureDefaults.swipeUpOpensDrawer(it.gestureBindings) -> R.string.needs_swipe_up_drawer
+                        !it.dockEnabled -> R.string.needs_dock
+                        else -> null
+                    }
+                },
                 SettingItem.Toggle(
                     R.string.drawer_swipe_haptic,
                     get = { it.drawerSwipeHaptic },
                     set = { viewModel.set(Pref.drawerSwipeHaptic, it) },
-                    visibleIf = { GestureDefaults.swipeUpOpensDrawer(it.gestureBindings) },
                     subtitle = R.string.drawer_swipe_haptic_summary
-                ),
+                ).blockedWhen {
+                    R.string.needs_swipe_up_drawer.takeUnless { _ ->
+                        GestureDefaults.swipeUpOpensDrawer(it.gestureBindings)
+                    }
+                },
                 SettingItem.Toggle(
                     R.string.drawer_frequent_row,
                     get = { it.drawerFrequentRow },
@@ -661,21 +766,22 @@ object SettingsCatalogue {
                 ),
                 rows.choice(
                     R.string.drawer_top_row_sort, TopRowSort.entries,
-                    { it.drawerTopRowSort }, { EnumLabels.of(it) },
-                    visibleIf = { it.drawerFrequentRow }
-                ) { viewModel.set(Pref.drawerTopRowSort, it) },
+                    { it.drawerTopRowSort }, { EnumLabels.of(it) }
+                ) { viewModel.set(Pref.drawerTopRowSort, it) }.hiddenWhen {
+                    needsOn(R.string.drawer_frequent_row, !it.drawerFrequentRow)
+                },
                 // Horizontal Scroll group: paged style only.
                 SettingItem.Toggle(
                     R.string.drawer_infinite_scroll,
                     get = { it.drawerInfiniteScroll },
-                    set = { viewModel.set(Pref.drawerInfiniteScroll, it) },
-                    visibleIf = { it.drawerStyle == DrawerStyle.PAGED_GRID }
-                ),
+                    set = { viewModel.set(Pref.drawerInfiniteScroll, it) }
+                ).hiddenWhen { dependsOn(R.string.drawer_style, it.drawerStyle != DrawerStyle.PAGED_GRID) },
                 rows.choice(
                     R.string.drawer_page_effect, ScrollEffect.entries,
-                    { it.drawerPageEffect }, { EnumLabels.of(it) },
-                    visibleIf = { it.drawerStyle == DrawerStyle.PAGED_GRID }
-                ) { viewModel.set(Pref.drawerPageEffect, it) },
+                    { it.drawerPageEffect }, { EnumLabels.of(it) }
+                ) { viewModel.set(Pref.drawerPageEffect, it) }.blockedWhen(animationsOff).hiddenWhen {
+                    dependsOn(R.string.drawer_style, it.drawerStyle != DrawerStyle.PAGED_GRID)
+                },
                 SettingItem.Accordion(R.string.advanced),
                 SettingItem.Toggle(
                     R.string.drawer_remember_position,
@@ -700,9 +806,8 @@ object SettingsCatalogue {
                     get = { (it.drawerIconScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.drawerIconScale, it / 100f) },
                     display = { context.getString(R.string.opacity_percent, it) },
-                    preview = { p, v -> p.copy(drawerIconScale = v / 100f) },
-                    visibleIf = { !it.drawerMatchDesktop }
-                ),
+                    preview = { p, v -> p.copy(drawerIconScale = v / 100f) }
+                ).hiddenWhen { needsOff(R.string.dock_match_desktop, it.drawerMatchDesktop) },
                 SettingItem.Slider(
                     R.string.drawer_padding_h,
                     min = 0, max = 48,
@@ -723,26 +828,24 @@ object SettingsCatalogue {
                     R.string.drawer_bg_opacity,
                     min = 20, max = 100,
                     step = 5,
-                    get = { (it.drawerBgOpacity * 100f).roundToInt() },
-                    set = { viewModel.set(Pref.drawerBgOpacity, it / 100f) },
+                    get = { SurfaceOpacity.effective(it, SurfaceId.DRAWER) },
+                    set = { SurfaceOpacity.set(viewModel, SurfaceId.DRAWER, it) },
                     display = { context.getString(R.string.opacity_percent, it) },
-                    preview = { p, v -> p.copy(drawerBgOpacity = v / 100f) }
+                    preview = { p, v -> SurfaceOpacity.preview(p, SurfaceId.DRAWER, v) }
                 ),
                 SettingItem.Toggle(
                     R.string.drawer_labels,
                     get = { it.drawerLabels },
-                    set = { viewModel.set(Pref.drawerLabels, it) },
-                    visibleIf = { it.drawerStyle != DrawerStyle.VERTICAL_LIST }
-                ),
+                    set = { viewModel.set(Pref.drawerLabels, it) }
+                ).hiddenWhen { dependsOn(R.string.drawer_style, it.drawerStyle == DrawerStyle.VERTICAL_LIST) },
                 *labelOverrideItems(context, viewModel, actions, LabelContext.DRAWER) {
-                    it.drawerLabels
+                    needsOn(R.string.drawer_labels, !it.drawerLabels)
                 }.toTypedArray(),
                 SettingItem.Toggle(
                     R.string.drawer_fast_scroller,
                     get = { it.drawerFastScroller },
-                    set = { viewModel.set(Pref.drawerFastScroller, it) },
-                    visibleIf = { it.drawerStyle != DrawerStyle.PAGED_GRID }
-                ),
+                    set = { viewModel.set(Pref.drawerFastScroller, it) }
+                ).hiddenWhen { dependsOn(R.string.drawer_style, it.drawerStyle == DrawerStyle.PAGED_GRID) },
                 SettingItem.Toggle(
                     R.string.drawer_pull_to_search,
                     get = { it.drawerPullToSearch },
@@ -750,15 +853,11 @@ object SettingsCatalogue {
                 ),
                 rows.color(
                     R.string.drawer_scrubber_color, { it.drawerScrubberColor },
-                    subtitle = {
-                        if (it.drawerScrubberColor.isEmpty()) {
-                            context.getString(R.string.option_default)
-                        } else {
-                            it.drawerScrubberColor
-                        }
-                    },
-                    visibleIf = { it.drawerFastScroller }
-                ) { viewModel.set(Pref.drawerScrubberColor, it) },
+                    // As the scroller's own switch, none in the paged style.
+                ) { viewModel.set(Pref.drawerScrubberColor, it) }.hiddenWhen {
+                    dependsOn(R.string.drawer_style, it.drawerStyle == DrawerStyle.PAGED_GRID)
+                        ?: needsOn(R.string.drawer_fast_scroller, !it.drawerFastScroller)
+                },
                 SettingItem.Header(R.string.group_tabs),
                 rows.choice(
                     R.string.drawer_tab_bar, DrawerTabBar.entries,
@@ -780,27 +879,24 @@ object SettingsCatalogue {
                 rows.choice(
                     R.string.drawer_tab_style, DrawerTabStyle.entries,
                     { it.drawerTabStyle }, { EnumLabels.of(it) },
-                    visibleIf = {
-                        (viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps()) &&
-                            it.drawerTabBar != DrawerTabBar.NONE
-                    }
-                ) { viewModel.set(Pref.drawerTabStyle, it) },
+                    visibleIf = { viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps() }
+                ) { viewModel.set(Pref.drawerTabStyle, it) }.hiddenWhen {
+                    dependsOn(R.string.drawer_tab_bar, it.drawerTabBar == DrawerTabBar.NONE)
+                },
                 rows.choice(
                     R.string.drawer_tab_content, DrawerTabContent.entries,
                     { it.drawerTabContent }, { EnumLabels.of(it) },
-                    visibleIf = {
-                        (viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps()) &&
-                            it.drawerTabBar != DrawerTabBar.NONE
-                    }
-                ) { viewModel.set(Pref.drawerTabContent, it) },
+                    visibleIf = { viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps() }
+                ) { viewModel.set(Pref.drawerTabContent, it) }.hiddenWhen {
+                    dependsOn(R.string.drawer_tab_bar, it.drawerTabBar == DrawerTabBar.NONE)
+                },
                 rows.choice(
                     R.string.drawer_tab_align, DrawerTabAlign.entries,
                     { it.drawerTabAlign }, { EnumLabels.of(it) },
-                    visibleIf = {
-                        (viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps()) &&
-                            it.drawerTabBar != DrawerTabBar.NONE
-                    }
-                ) { viewModel.set(Pref.drawerTabAlign, it) },
+                    visibleIf = { viewModel.drawerTabGroups().isNotEmpty() || viewModel.hasWorkApps() }
+                ) { viewModel.set(Pref.drawerTabAlign, it) }.hiddenWhen {
+                    dependsOn(R.string.drawer_tab_bar, it.drawerTabBar == DrawerTabBar.NONE)
+                },
                 SettingItem.Toggle(
                     R.string.drawer_work_tab,
                     get = { it.drawerWorkTab },
@@ -851,14 +947,16 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.smart_folders,
                     get = { it.smartFolders },
-                    set = { viewModel.setSmartFolders(it) }
+                    set = { viewModel.setSmartFolders(it) },
+                    subtitle = R.string.smart_folders_summary
                 ),
                 SettingItem.Toggle(
                     R.string.drawer_folders_first,
                     get = { it.drawerFoldersFirst },
-                    set = { viewModel.set(Pref.drawerFoldersFirst, it) },
-                    visibleIf = { it.smartFolders || viewModel.drawerFolderGroups().isNotEmpty() }
-                )
+                    set = { viewModel.set(Pref.drawerFoldersFirst, it) }
+                ).hiddenWhen {
+                    needsOn(R.string.smart_folders, !it.smartFolders && viewModel.drawerFolderGroups().isEmpty())
+                }
             )
         ),
         SettingsSection(
@@ -902,14 +1000,14 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.search_apps_one_row,
                     get = { it.searchAppsOneRow },
-                    set = { viewModel.set(Pref.searchAppsOneRow, it) }
+                    set = { viewModel.set(Pref.searchAppsOneRow, it) },
+                    subtitle = R.string.search_apps_one_row_summary
                 ),
                 SettingItem.Toggle(
                     R.string.search_contact_cards,
                     get = { it.searchContactCards },
-                    set = { viewModel.set(Pref.searchContactCards, it) },
-                    visibleIf = { it.searchContacts }
-                ),
+                    set = { viewModel.set(Pref.searchContactCards, it) }
+                ).hiddenWhen { needsOn(R.string.search_contacts, !it.searchContacts) },
                 SettingItem.Toggle(
                     R.string.search_cards,
                     get = { it.searchCards },
@@ -941,7 +1039,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.search_private_keyboard,
                     get = { it.searchPrivateKeyboard },
-                    set = { viewModel.set(Pref.searchPrivateKeyboard, it) }
+                    set = { viewModel.set(Pref.searchPrivateKeyboard, it) },
+                    subtitle = R.string.search_private_keyboard_summary
                 ),
                 SettingItem.Header(R.string.group_bars),
                 SettingItem.Row(
@@ -970,26 +1069,6 @@ object SettingsCatalogue {
                         )
                     },
                     onClick = { actions.openSection(R.string.drawer_search_bar) }
-                ),
-                // Supersedes the legacy homeSearch toggle; the pref remains
-                // underneath as the "" fallback.
-                rows.choice(
-                    R.string.home_button_action, HomeButtonAction.choices,
-                    { HomeButtonAction.effective(it.homeButtonAction, it.homeSearch) }, { EnumLabels.of(it) }
-                ) { action ->
-                    viewModel.set(Pref.homeButtonAction, action.name)
-                    // Mirror the legacy pref so old builds and backups derive the
-                    // same behavior, like badgeStyle keeps badgeCounts in sync.
-                    viewModel.set(Pref.homeSearch, action == GestureAction.OPEN_SEARCH)
-                },
-                SettingItem.Toggle(
-                    R.string.home_button_main_page_only,
-                    get = { it.homeButtonOnMainPage },
-                    set = { viewModel.set(Pref.homeButtonOnMainPage, it) },
-                    visibleIf = {
-                        HomeButtonAction.effective(it.homeButtonAction, it.homeSearch) !=
-                            com.supernova.launcher.gesture.GestureAction.NONE
-                    }
                 )
             )
         ),
@@ -1037,14 +1116,13 @@ object SettingsCatalogue {
                     R.string.search_bar_wireframe,
                     get = { SearchBarPrefs.desktopBar(it).wireframe },
                     set = { on -> rows.editDesktopBar { it.copy(wireframe = on) } },
-                    visibleIf = { IconGlass.fromName(SearchBarPrefs.desktopBar(it).glass) == IconGlass.OFF }
-                ),
+                    subtitle = R.string.search_bar_wireframe_summary
+                ).hiddenWhen(desktopGlassHidden),
                 SettingItem.Toggle(
                     R.string.search_bar_shadow,
                     get = { SearchBarPrefs.desktopBar(it).shadow },
-                    set = { on -> rows.editDesktopBar { it.copy(shadow = on) } },
-                    visibleIf = { IconGlass.fromName(SearchBarPrefs.desktopBar(it).glass) == IconGlass.OFF }
-                ),
+                    set = { on -> rows.editDesktopBar { it.copy(shadow = on) } }
+                ).hiddenWhen(desktopGlassHidden),
                 SettingItem.Toggle(
                     R.string.search_bar_hint_text,
                     get = { SearchBarPrefs.desktopBar(it).hint },
@@ -1077,11 +1155,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.drawer_search_global,
                     get = { SearchBarPrefs.drawerBar(it).globalOnTap },
-                    set = { on -> rows.editDrawerBar { it.copy(globalOnTap = on) } },
-                    visibleIf = {
-                        DrawerBarPlacement.fromConfig(SearchBarPrefs.drawerBar(it)) != DrawerBarPlacement.HIDDEN
-                    }
-                ),
+                    set = { on -> rows.editDrawerBar { it.copy(globalOnTap = on) } }
+                ).hiddenWhen(drawerFieldHidden),
                 SettingItem.Header(R.string.group_appearance),
                 rows.choice(
                     R.string.icon_glass, IconGlass.entries,
@@ -1092,9 +1167,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.drawer_bar_filled,
                     get = { SearchBarPrefs.drawerBar(it).filled },
-                    set = { on -> rows.editDrawerBar { it.copy(filled = on) } },
-                    visibleIf = { IconGlass.fromName(SearchBarPrefs.drawerBar(it).glass) == IconGlass.OFF }
-                ),
+                    set = { on -> rows.editDrawerBar { it.copy(filled = on) } }
+                ).hiddenWhen(drawerGlassHidden),
                 // An unset radius draws as the full pill, so it reads as one.
                 SettingItem.Slider(
                     R.string.style_corner_radius, min = 0, max = DrawerSearchBarConfig.MAX_RADIUS, step = 2,
@@ -1111,8 +1185,8 @@ object SettingsCatalogue {
             ) + SearchBarButtons.ROWS.map { drawerButton(viewModel, it) }
         ),
         // Feed page: the page toggle, then Layout (frequent apps and
-        // shortcuts, the rows stepper, the search bar), with the edge swipe
-        // under Advanced. Cards are their own top-level page.
+        // shortcuts, the rows stepper, the search bar, the edge swipe), and a
+        // link to the Cards page, which links back.
         SettingsSection(
             R.string.settings_section_feed,
             listOf(
@@ -1122,42 +1196,47 @@ object SettingsCatalogue {
                     get = { it.feedEnabled },
                     set = { viewModel.set(Pref.feedEnabled, it) }
                 ),
+                // The cards' color and opacity: the Style tab's Cards row.
+                SettingItem.StyleTarget(
+                    R.string.feed_card_colors, SurfaceId.CARDS, { actions.openStylePicker(SurfaceId.CARDS) }
+                ).hiddenWhen(feedHidden),
                 SettingItem.Header(R.string.feed_layout_header, visibleIf = { it.feedEnabled }),
                 SettingItem.Toggle(
                     R.string.feed_show_frequent,
                     subtitle = R.string.feed_show_frequent_subtitle,
                     get = { it.feedShowFrequent },
-                    set = { viewModel.set(Pref.feedShowFrequent, it) },
-                    visibleIf = { it.feedEnabled }
-                ),
+                    set = { viewModel.set(Pref.feedShowFrequent, it) }
+                ).hiddenWhen(feedHidden),
                 SettingItem.Toggle(
                     R.string.feed_show_shortcuts,
                     subtitle = R.string.feed_show_shortcuts_subtitle,
                     get = { it.feedShowShortcuts },
-                    set = { viewModel.set(Pref.feedShowShortcuts, it) },
-                    visibleIf = { it.feedEnabled }
-                ),
+                    set = { viewModel.set(Pref.feedShowShortcuts, it) }
+                ).hiddenWhen(feedHidden),
                 // "Suggested shortcuts rows": how many rows of pills.
                 SettingItem.Slider(
                     R.string.feed_shortcut_rows,
                     min = 1, max = 3,
                     get = { it.feedShortcutRows },
                     set = { viewModel.set(Pref.feedShortcutRows, it) },
-                    display = { context.resources.getQuantityString(R.plurals.feed_shortcut_rows_value, it, it) },
-                    visibleIf = { it.feedEnabled && it.feedShowShortcuts }
-                ),
+                    display = { context.resources.getQuantityString(R.plurals.feed_shortcut_rows_value, it, it) }
+                ).hiddenWhen { feedHidden(it) ?: needsOn(R.string.feed_show_shortcuts, !it.feedShowShortcuts) },
                 SettingItem.Toggle(
                     R.string.feed_show_search,
                     get = { it.feedShowSearch },
-                    set = { viewModel.set(Pref.feedShowSearch, it) },
-                    visibleIf = { it.feedEnabled }
-                ),
-                SettingItem.Accordion(R.string.feed_advanced, visibleIf = { it.feedEnabled }),
+                    set = { viewModel.set(Pref.feedShowSearch, it) }
+                ).hiddenWhen(feedHidden),
                 SettingItem.Toggle(
                     R.string.feed_edge_swipe,
                     get = { it.feedEdgeSwipe },
-                    set = { viewModel.set(Pref.feedEdgeSwipe, it) },
-                    visibleIf = { it.feedEnabled }
+                    set = { viewModel.set(Pref.feedEdgeSwipe, it) }
+                ).hiddenWhen(feedHidden),
+                // What the page shows lives on the Cards page.
+                SettingItem.Header(R.string.settings_section_cards),
+                SettingItem.Row(
+                    R.string.feed_cards_link,
+                    subtitle = { context.getString(R.string.feed_cards_link_summary) },
+                    onClick = actions.openCards
                 )
             )
         ),
@@ -1203,6 +1282,17 @@ object SettingsCatalogue {
                         onGear = { actions.openSection(R.string.feed_contacts_title) }
                     )
                 )
+                // Cards show on the feed page; its switch is one tap away.
+                add(SettingItem.Header(R.string.settings_section_feed))
+                add(
+                    SettingItem.Row(
+                        R.string.cards_feed_link,
+                        subtitle = { prefs ->
+                            context.getString(if (prefs.feedEnabled) R.string.mode_on else R.string.mode_off)
+                        },
+                        onClick = { actions.openSection(R.string.settings_section_feed) }
+                    )
+                )
             }
         ),
         // Behind each built-in card's gear (reached from the Cards page, not
@@ -1220,20 +1310,10 @@ object SettingsCatalogue {
                     R.string.feed_show_media,
                     get = { it.feedShowMedia },
                     set = { viewModel.set(Pref.feedShowMedia, it) }
-                ),
+                ).blockedWhen(feedOff),
                 // Honest note when the media card can't work: notification
                 // access gates getActiveSessions, same as badges.
-                SettingItem.Row(
-                    R.string.feed_media_needs_access,
-                    subtitle = { context.getString(R.string.feed_media_needs_access_summary) },
-                    onClick = actions.openNotificationAccess,
-                    look = SettingItem.RowLook(icon = R.drawable.ic_settings_warn, warn = true),
-                    visibleIf = {
-                        it.feedShowMedia &&
-                            !com.supernova.launcher.notification.SupernovaNotificationListener
-                                .isEnabled(context)
-                    }
-                )
+                rows.needsNotificationAccess(R.string.feed_media_needs_access_summary) { it.feedShowMedia }
             )
         ),
         SettingsSection(
@@ -1252,7 +1332,7 @@ object SettingsCatalogue {
                         viewModel.set(Pref.feedShowCalendar, enabled)
                         if (enabled) actions.onFeedCalendarEnabled()
                     }
-                )
+                ).blockedWhen(feedOff)
             )
         ),
         SettingsSection(
@@ -1271,7 +1351,7 @@ object SettingsCatalogue {
                         viewModel.set(Pref.feedShowContacts, enabled)
                         if (enabled) actions.onFeedContactsEnabled()
                     }
-                )
+                ).blockedWhen(feedOff)
             )
         ),
         SettingsSection(
@@ -1286,7 +1366,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.folder_prioritize_first,
                     get = { it.folderPrioritizeFirst },
-                    set = { viewModel.set(Pref.folderPrioritizeFirst, it) }
+                    set = { viewModel.set(Pref.folderPrioritizeFirst, it) },
+                    subtitle = R.string.folder_prioritize_first_summary
                 ),
                 SettingItem.Slider(
                     R.string.folder_columns,
@@ -1312,23 +1393,21 @@ object SettingsCatalogue {
                     step = 5,
                     get = { (it.folderIconScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.folderIconScale, it / 100f) },
-                    display = { context.getString(R.string.opacity_percent, it) },
-                    visibleIf = { !it.folderMatchDesktop }
-                ),
+                    display = { context.getString(R.string.opacity_percent, it) }
+                ).hiddenWhen { needsOff(R.string.dock_match_desktop, it.folderMatchDesktop) },
                 SettingItem.Toggle(
                     R.string.folder_labels,
                     get = { it.folderLabels },
                     set = { viewModel.set(Pref.folderLabels, it) }
                 ),
                 *labelOverrideItems(context, viewModel, actions, LabelContext.FOLDER) {
-                    it.folderLabels
+                    needsOn(R.string.folder_labels, !it.folderLabels)
                 }.toTypedArray(),
                 SettingItem.Toggle(
                     R.string.folder_badges,
                     get = { it.folderBadges },
-                    set = { viewModel.set(Pref.folderBadges, it) },
-                    visibleIf = { it.badges }
-                ),
+                    set = { viewModel.set(Pref.folderBadges, it) }
+                ).blockedWhen { R.string.needs_badges.takeUnless { _ -> it.badges } },
                 SettingItem.Toggle(
                     R.string.folder_close_on_launch,
                     get = { it.folderCloseOnLaunch },
@@ -1343,9 +1422,8 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.folder_show_count,
                     get = { it.folderShowCount },
-                    set = { viewModel.setFolderShowCount(it) },
-                    visibleIf = { it.folderShowName }
-                ),
+                    set = { viewModel.setFolderShowCount(it) }
+                ).hiddenWhen { needsOn(R.string.folder_show_name, !it.folderShowName) },
                 SettingItem.Slider(
                     R.string.folder_window_radius,
                     min = 0, max = 32,
@@ -1427,11 +1505,8 @@ object SettingsCatalogue {
                     R.string.themed_icons_autogen,
                     get = { it.themedIconsAutogen },
                     set = { viewModel.set(Pref.themedIconsAutogen, it) },
-                    visibleIf = {
-                        it.themedIcons &&
-                            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
-                    }
-                ),
+                    visibleIf = { android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU }
+                ).hiddenWhen { needsOn(R.string.themed_icons, !it.themedIcons) },
                 SettingItem.Row(
                     R.string.icon_pack,
                     // The pack's own label, not the package name the pref
@@ -1488,21 +1563,20 @@ object SettingsCatalogue {
                         if (enabled) actions.onBadgesEnabled()
                     }
                 ),
+                rows.needsNotificationAccess(R.string.badges_need_access_summary) { it.badges },
                 rows.choice(
                     R.string.badge_style, listOf(BadgeStyle.DYNAMIC, BadgeStyle.DOTS, BadgeStyle.NUMERIC),
-                    { BadgeStyle.effective(it) }, { EnumLabels.of(it) },
-                    visibleIf = { it.badges }
+                    { BadgeStyle.effective(it) }, { EnumLabels.of(it) }
                 ) { style ->
                     viewModel.set(Pref.badgeStyle, style.name)
                     // Keep the legacy pref in sync so old builds and backups still
                     // derive the same style.
                     viewModel.set(Pref.badgeCounts, style == BadgeStyle.NUMERIC)
-                },
+                }.hiddenWhen(badgesHidden),
                 SettingItem.Row(
                     R.string.badged_apps,
-                    onClick = actions.editBadgedApps,
-                    visibleIf = { it.badges }
-                ),
+                    onClick = actions.editBadgedApps
+                ).hiddenWhen(badgesHidden),
                 rows.color(
                     R.string.badge_color, { it.badgeColor },
                     // Unset, Dots take the app icon's color.
@@ -1510,16 +1584,20 @@ object SettingsCatalogue {
                         if (prefs.badgeColor.isBlank() && BadgeStyle.effective(prefs) == BadgeStyle.DOTS) {
                             context.getString(R.string.badge_color_icon)
                         } else {
-                            null
+                            context.getString(curatedFor(prefs.badgeColor).first)
                         }
-                    },
-                    visibleIf = { it.badges && BadgeStyle.effective(it) != BadgeStyle.DYNAMIC }
-                ) { viewModel.set(Pref.badgeColor, it) },
+                    }
+                ) { viewModel.set(Pref.badgeColor, it) }.hiddenWhen {
+                    badgesHidden(it)
+                        ?: dependsOn(R.string.badge_style, BadgeStyle.effective(it) == BadgeStyle.DYNAMIC)
+                },
                 // Numeric dots' own look, laid out under the style.
                 rows.color(
-                    R.string.badge_text_color, { it.badgeTextColor },
-                    visibleIf = { it.badges && BadgeStyle.effective(it) == BadgeStyle.NUMERIC }
-                ) { viewModel.set(Pref.badgeTextColor, it) },
+                    R.string.badge_text_color, { it.badgeTextColor }
+                ) { viewModel.set(Pref.badgeTextColor, it) }.hiddenWhen {
+                    badgesHidden(it)
+                        ?: dependsOn(R.string.badge_style, BadgeStyle.effective(it) != BadgeStyle.NUMERIC)
+                },
                 SettingItem.Slider(
                     R.string.badge_corner_radius,
                     min = 0, max = com.supernova.launcher.data.BadgeLimits.CORNER_ROUND,
@@ -1527,29 +1605,28 @@ object SettingsCatalogue {
                     get = { it.badgeCornerRadius },
                     set = { viewModel.set(Pref.badgeCornerRadius, it) },
                     display = { context.getString(R.string.opacity_percent, it) },
-                    preview = { prefs, value -> prefs.copy(badgeCornerRadius = value) },
-                    visibleIf = { it.badges && BadgeStyle.effective(it) == BadgeStyle.NUMERIC }
-                ),
+                    preview = { prefs, value -> prefs.copy(badgeCornerRadius = value) }
+                ).hiddenWhen {
+                    badgesHidden(it)
+                        ?: dependsOn(R.string.badge_style, BadgeStyle.effective(it) != BadgeStyle.NUMERIC)
+                },
                 SettingItem.Toggle(
                     R.string.badge_outline,
                     get = { it.badgeOutline },
-                    set = { viewModel.set(Pref.badgeOutline, it) },
-                    visibleIf = { it.badges }
-                ),
+                    set = { viewModel.set(Pref.badgeOutline, it) }
+                ).hiddenWhen(badgesHidden),
                 rows.choice(
                     R.string.badge_position, BadgePosition.entries,
-                    { it.badgePosition }, { EnumLabels.of(it) },
-                    visibleIf = { it.badges }
-                ) { viewModel.set(Pref.badgePosition, it) },
+                    { it.badgePosition }, { EnumLabels.of(it) }
+                ) { viewModel.set(Pref.badgePosition, it) }.hiddenWhen(badgesHidden),
                 SettingItem.Slider(
                     R.string.badge_size,
                     min = 60, max = 160,
                     step = 5,
                     get = { (it.badgeScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.badgeScale, it / 100f) },
-                    display = { context.getString(R.string.opacity_percent, it) },
-                    visibleIf = { it.badges }
-                ),
+                    display = { context.getString(R.string.opacity_percent, it) }
+                ).hiddenWhen(badgesHidden),
                 // Test notification badge: a badge to look at without
                 // waiting for a message.
                 SettingItem.Row(
@@ -1574,8 +1651,12 @@ object SettingsCatalogue {
                 SettingItem.Toggle(
                     R.string.popup_notifications,
                     get = { it.popupNotifications },
-                    set = { viewModel.set(Pref.popupNotifications, it) }
+                    set = { enabled ->
+                        viewModel.set(Pref.popupNotifications, enabled)
+                        if (enabled) actions.onPopupNotificationsEnabled()
+                    }
                 ),
+                rows.needsNotificationAccess(R.string.popup_needs_access_summary) { it.popupNotifications },
                 rows.choice(
                     R.string.popup_style, com.supernova.launcher.ui.PopupMenuStyle.entries,
                     { it.popupStyle }, { EnumLabels.of(it) },
@@ -1585,19 +1666,16 @@ object SettingsCatalogue {
                     R.string.popup_group_shortcuts,
                     get = { it.popupGroupShortcuts },
                     set = { viewModel.set(Pref.popupGroupShortcuts, it) },
-                    visibleIf = { it.popupStyle.canGroup },
                     subtitle = R.string.popup_group_shortcuts_summary
-                ),
+                ).hiddenWhen { dependsOn(R.string.popup_style, !it.popupStyle.canGroup) },
                 SettingItem.Toggle(
                     R.string.popup_card_bg,
                     get = { it.popupCardBg },
                     set = { viewModel.set(Pref.popupCardBg, it) },
                     // Grouping draws the shortcuts on tiles of their own.
-                    visibleIf = {
-                        !it.popupGroupShortcuts ||
-                            !it.popupStyle.canGroup
-                    }
-                )
+                ).hiddenWhen {
+                    needsOff(R.string.popup_group_shortcuts, it.popupGroupShortcuts && it.popupStyle.canGroup)
+                }
             )
         ),
         SettingsSection(
@@ -1606,6 +1684,15 @@ object SettingsCatalogue {
                 // One row per gesture, its action as the subtitle: a
                 // single "Gestures" row opening a list of
                 // "gesture - action" lines read as a menu, not settings.
+                warningRow(
+                    context,
+                    R.string.gestures_need_accessibility,
+                    R.string.gestures_need_accessibility_summary,
+                    actions.explainAccessibility
+                ) {
+                    com.supernova.launcher.ui.PermissionPrompts.gesturesNeedAccessibility(it) &&
+                        !com.supernova.launcher.SupernovaAccessibilityService.isEnabled(context)
+                },
                 SettingItem.Header(R.string.group_one_finger),
                 rows.gestureRow(Gesture.SWIPE_UP),
                 rows.gestureRow(Gesture.SWIPE_DOWN),
@@ -1614,17 +1701,16 @@ object SettingsCatalogue {
                     R.string.swipe_down_haptic,
                     get = { it.swipeDownHaptic },
                     set = { viewModel.set(Pref.swipeDownHaptic, it) },
-                    visibleIf = {
-                        GestureDefaults.decode(it.gestureBindings)[Gesture.SWIPE_DOWN]?.action ==
-                            GestureAction.EXPAND_NOTIFICATIONS
-                    },
                     subtitle = R.string.swipe_down_haptic_summary
-                ),
+                ).hiddenWhen {
+                    val down = GestureDefaults.decode(it.gestureBindings)[Gesture.SWIPE_DOWN]?.action
+                    dependsOn(R.string.gesture_swipe_down, down != GestureAction.EXPAND_NOTIFICATIONS)
+                },
                 // Every sideways swipe turns the page with infinite scroll
                 // on, so these never fire: one notice stands in for both
                 // rows (#122). Their bindings stay for when it's off.
-                rows.gestureRow(Gesture.SWIPE_LEFT, visibleIf = { !it.infiniteScroll }),
-                rows.gestureRow(Gesture.SWIPE_RIGHT, visibleIf = { !it.infiniteScroll }),
+                rows.gestureRow(Gesture.SWIPE_LEFT).hiddenWhen(infiniteScrollHidden),
+                rows.gestureRow(Gesture.SWIPE_RIGHT).hiddenWhen(infiniteScrollHidden),
                 SettingItem.Row(
                     0,
                     subtitle = { context.getString(R.string.gesture_left_right_conflict_summary) },
@@ -1643,6 +1729,27 @@ object SettingsCatalogue {
                 rows.gestureRow(Gesture.TWO_FINGER_SWIPE_DOWN),
                 rows.gestureRow(Gesture.TWO_FINGER_ROTATE_CW),
                 rows.gestureRow(Gesture.TWO_FINGER_ROTATE_CCW),
+                // The Home button pressed while home shows.
+                SettingItem.Header(R.string.group_home_button),
+                // Supersedes the legacy homeSearch toggle; the pref remains
+                // underneath as the "" fallback.
+                rows.choice(
+                    R.string.home_button_action, HomeButtonAction.choices,
+                    { HomeButtonAction.effective(it.homeButtonAction, it.homeSearch) }, { EnumLabels.of(it) }
+                ) { action ->
+                    viewModel.set(Pref.homeButtonAction, action.name)
+                    // Mirror the legacy pref so old builds and backups derive the
+                    // same behavior, like badgeStyle keeps badgeCounts in sync.
+                    viewModel.set(Pref.homeSearch, action == GestureAction.OPEN_SEARCH)
+                },
+                SettingItem.Toggle(
+                    R.string.home_button_main_page_only,
+                    get = { it.homeButtonOnMainPage },
+                    set = { viewModel.set(Pref.homeButtonOnMainPage, it) }
+                ).hiddenWhen {
+                    val action = HomeButtonAction.effective(it.homeButtonAction, it.homeSearch)
+                    dependsOn(R.string.home_button_action, action == GestureAction.NONE)
+                },
                 SettingItem.Header(R.string.action_lock_screen),
                 SettingItem.Row(
                     R.string.lock_method,
@@ -1654,7 +1761,16 @@ object SettingsCatalogue {
                         )
                     },
                     onClick = actions.pickLockMethod
-                )
+                ),
+                warningRow(
+                    context,
+                    R.string.device_admin_inactive,
+                    R.string.device_admin_inactive_summary,
+                    actions.requestDeviceAdmin
+                ) {
+                    it.lockMethod == LockMethod.DEVICE_ADMIN &&
+                        !com.supernova.launcher.SupernovaDeviceAdmin.isActive(context)
+                }
             )
         ),
         SettingsSection(
@@ -1690,7 +1806,14 @@ object SettingsCatalogue {
                 SettingItem.Row(
                     R.string.about_version,
                     subtitle = { SupernovaApp.versionLabel(context) },
-                    onClick = {}
+                    onClick = {},
+                    // Information only: no ripple, no chevron.
+                    look = SettingItem.RowLook(tappable = false)
+                ),
+                SettingItem.Row(
+                    R.string.about_whats_new,
+                    subtitle = { context.getString(R.string.about_whats_new_summary) },
+                    onClick = actions.showWhatsNew
                 ),
                 SettingItem.Row(
                     R.string.about_license,
@@ -1700,16 +1823,12 @@ object SettingsCatalogue {
                 SettingItem.Row(
                     R.string.about_source,
                     subtitle = { context.getString(R.string.about_source_url).removePrefix("https://") },
-                    onClick = {
-                        runLogged("open link") {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    context.getString(R.string.about_source_url).toUri()
-                                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        }
-                    }
+                    onClick = { AboutLinks.open(context, context.getString(R.string.about_source_url)) }
+                ),
+                SettingItem.Row(
+                    R.string.about_report_issue,
+                    subtitle = { context.getString(R.string.about_report_issue_summary) },
+                    onClick = { AboutLinks.open(context, AboutLinks.newIssueUrl(context)) }
                 ),
                 SettingItem.Row(
                     R.string.crash_log,
@@ -1759,10 +1878,14 @@ object SettingsCatalogue {
                     subtitle = { context.getString(R.string.labs_clear_icon_cache_summary) },
                     onClick = actions.clearIconCache,
                     look = SettingItem.RowLook(chevron = false)
-                ),
-                // Labs Permissions: Supernova's own.
-                SettingItem.Header(R.string.labs_permissions)
-            ) + LabsPermission.entries.filter { it.applies }.map { permission ->
+                )
+            )
+        ),
+        // Every access Supernova can ask for, each with its state; a tap
+        // grants it or opens the system screen that does.
+        SettingsSection(
+            R.string.permissions,
+            LabsPermission.entries.filter { it.applies }.map { permission ->
                 SettingItem.Row(
                     permission.title,
                     subtitle = { permission.status(context) },
@@ -1809,18 +1932,9 @@ object SettingsCatalogue {
                     )
                 },
                 onClick = actions.editThemeSchedule,
-                visibleIf = { it.themeMode == ThemeMode.SCHEDULE },
                 look = SettingItem.RowLook(R.drawable.ic_style_schedule)
-            ),
-            rows.choice(
-                R.string.accent_color, AccentColor.entries,
-                { it.accentColor }, { EnumLabels.of(it) },
-                onPick = { viewModel.set(Pref.accentColor, it) }
-            ).withLook(
-                SettingItem.RowLook(R.drawable.ic_style_accent, swatch = {
-                    context.getColor(it.accentColor.colorRes)
-                })
-            ),
+            ).hiddenWhen { dependsOn(R.string.theme_mode, it.themeMode != ThemeMode.SCHEDULE) },
+            accentRow(context, viewModel, actions),
             SettingItem.Header(R.string.style_group_surfaces),
             SettingItem.StyleTarget(
                 R.string.settings_section_home, SurfaceId.HOME, { actions.openStylePicker(SurfaceId.HOME) }
@@ -1829,6 +1943,9 @@ object SettingsCatalogue {
             SettingItem.StyleTarget(R.string.settings_section_dock, SurfaceId.DOCK, { actions.openStylePicker(SurfaceId.DOCK) }),
             SettingItem.StyleTarget(R.string.settings_section_folders, SurfaceId.FOLDER, { actions.openStylePicker(SurfaceId.FOLDER) }),
             SettingItem.StyleTarget(R.string.style_popup, SurfaceId.POPUP, { actions.openStylePicker(SurfaceId.POPUP) }),
+            SettingItem.StyleTarget(
+                R.string.style_cards, SurfaceId.CARDS, { actions.openStylePicker(SurfaceId.CARDS) }
+            ),
             SettingItem.StyleTarget(
                 R.string.desktop_search_bar, SurfaceId.SEARCH_BAR,
                 { actions.openStylePicker(SurfaceId.SEARCH_BAR) }
@@ -1842,6 +1959,22 @@ object SettingsCatalogue {
     )
     }
 
+    // A row saying what a setting still needs (a permission, a service):
+    // shown while it is missing, and a tap goes to grant it.
+    private fun warningRow(
+        context: Context,
+        @StringRes title: Int,
+        @StringRes summary: Int,
+        onClick: () -> Unit,
+        visibleIf: (LauncherPrefs) -> Boolean
+    ): SettingItem.Row = SettingItem.Row(
+        title,
+        subtitle = { context.getString(summary) },
+        onClick = onClick,
+        look = SettingItem.RowLook(icon = R.drawable.ic_settings_warn, warn = true),
+        visibleIf = visibleIf
+    )
+
     private fun formatMinute(minute: Int): String =
         "%d:%02d".format(minute / 60, minute % 60)
 
@@ -1854,7 +1987,7 @@ object SettingsCatalogue {
         viewModel: LauncherViewModel,
         actions: Actions,
         labelContext: LabelContext,
-        sectionVisible: (LauncherPrefs) -> Boolean
+        sectionHidden: (LauncherPrefs) -> SettingItem.HiddenBy?
     ): List<SettingItem> {
         fun override(prefs: LauncherPrefs): LabelOverride =
             LabelConfig.decode(prefs.labelConfig).of(labelContext)
@@ -1875,17 +2008,15 @@ object SettingsCatalogue {
                             LabelOverride()
                         }
                     }
-                },
-                visibleIf = sectionVisible
-            ),
+                }
+            ).hiddenWhen(sectionHidden),
             SettingItem.Slider(
                 R.string.label_size,
                 min = 9, max = 18,
                 get = { override(it).size ?: it.labelSize },
                 set = { v -> viewModel.updateLabelOverride(labelContext) { it.copy(size = v) } },
-                display = { context.getString(R.string.label_size_value, it) },
-                visibleIf = { sectionVisible(it) && customized(it) }
-            ),
+                display = { context.getString(R.string.label_size_value, it) }
+            ).hiddenWhen { sectionHidden(it) ?: needsOn(R.string.label_customize, !customized(it)) },
             SettingItem.Row(
                 R.string.label_font,
                 subtitle = {
@@ -1896,21 +2027,18 @@ object SettingsCatalogue {
                     rows.fontPick(override(prefs).font?.let(LabelFont::fromName) ?: prefs.labelFont) { font ->
                         viewModel.updateLabelOverride(labelContext) { it.copy(font = font.name) }
                     }
-                },
-                visibleIf = { sectionVisible(it) && customized(it) }
-            ),
+                }
+            ).hiddenWhen { sectionHidden(it) ?: needsOn(R.string.label_customize, !customized(it)) },
             SettingItem.Toggle(
                 R.string.label_shadow,
                 get = { override(it).shadow ?: it.labelShadow },
-                set = { v -> viewModel.updateLabelOverride(labelContext) { it.copy(shadow = v) } },
-                visibleIf = { sectionVisible(it) && customized(it) }
-            ),
+                set = { v -> viewModel.updateLabelOverride(labelContext) { it.copy(shadow = v) } }
+            ).hiddenWhen { sectionHidden(it) ?: needsOn(R.string.label_customize, !customized(it)) },
             SettingItem.Toggle(
                 R.string.label_single_line,
                 get = { LabelStyler.singleLineFor(labelContext, it) },
-                set = { v -> viewModel.updateLabelOverride(labelContext) { it.copy(singleLine = v) } },
-                visibleIf = { sectionVisible(it) && customized(it) }
-            )
+                set = { v -> viewModel.updateLabelOverride(labelContext) { it.copy(singleLine = v) } }
+            ).hiddenWhen { sectionHidden(it) ?: needsOn(R.string.label_customize, !customized(it)) }
         )
     }
 
@@ -1934,6 +2062,23 @@ object SettingsCatalogue {
     }
 }
 
+// What brings back a row its page hides, for the settings search's hint
+// (SettingItem.hiddenWhen, #133): the setting, which way it needs to go, and
+// null while nothing hides the row.
+private fun needsOn(@StringRes setting: Int, missing: Boolean, @StringRes page: Int = 0) =
+    SettingItem.HiddenBy(setting, SettingItem.HiddenBy.Needs.ON, page).takeIf { missing }
+
+private fun needsOff(@StringRes setting: Int, set: Boolean, @StringRes page: Int = 0) =
+    SettingItem.HiddenBy(setting, SettingItem.HiddenBy.Needs.OFF, page).takeIf { set }
+
+private fun dependsOn(@StringRes setting: Int, unmet: Boolean) =
+    SettingItem.HiddenBy(setting, SettingItem.HiddenBy.Needs.OTHER).takeIf { unmet }
+
+// The drawer field's own rows go with the field.
+private val drawerFieldHidden: (LauncherPrefs) -> SettingItem.HiddenBy? = {
+    dependsOn(R.string.search_bar_placement, !SearchBarPrefs.drawerFieldShown(it))
+}
+
 // One of the drawer field's buttons (drawerActionButtons), on and off. As on
 // the home bar, turning one on adds it after the others.
 private fun drawerButton(viewModel: LauncherViewModel, button: SearchBarChip) = SettingItem.Toggle(
@@ -1942,9 +2087,8 @@ private fun drawerButton(viewModel: LauncherViewModel, button: SearchBarChip) = 
     set = { on ->
         val now = SearchBarButtons.decode(viewModel.state.value.prefs.drawerActionButtons)
         viewModel.set(Pref.drawerActionButtons, SearchBarButtons.encode(SearchBarButtons.toggled(now, button, on)))
-    },
-    visibleIf = { SearchBarPrefs.drawerFieldShown(it) }
-)
+    }
+).hiddenWhen(drawerFieldHidden)
 
 // The two bars' slices of the searchBarConfig JSON, for their pages' rows
 // and previews: read one, or a prefs snapshot with one changed.

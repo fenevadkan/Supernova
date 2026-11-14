@@ -140,7 +140,10 @@ data class LauncherModel(
     val defaultPage: Int = 0,
     val appOverrides: Map<String, AppOverride> = emptyMap(),
     // v5: custom feed-page cards (see feed/FeedCards.kt).
-    val feedCards: List<com.supernova.launcher.feed.FeedCard> = emptyList()
+    val feedCards: List<com.supernova.launcher.feed.FeedCard> = emptyList(),
+    // The feed's card order, built-in cards included (feed/FeedOrder.kt);
+    // empty = the order it always had. Default-supplied, so no migration.
+    val feedOrder: List<String> = emptyList()
 )
 
 @Serializable
@@ -193,6 +196,8 @@ data class LauncherPrefs(
     val dockPages: Int = 1,
     val dockBgStyle: DockBgStyle = DockBgStyle.NONE,
     val dockBgOpacity: Float = 0.3f,
+    // The dock background's corner radius, in dp.
+    val dockBgRadius: Int = 14,
     // Dock background runs flush to the window's bottom edge (no side or
     // bottom margins, square bottom corners), meeting the transparent nav
     // bar the way a draw-behind-navigation option reads. The window
@@ -649,9 +654,6 @@ data class LaunchableApp(
     val label: String,
     val userSerial: Long = 0L,
     val installTime: Long = 0L,
-    // The app's installed files (its APKs), for the size order. Readable
-    // without any permission, unlike its data and cache.
-    val sizeBytes: Long = 0L,
     // Resolved from the app's override so list surfaces can honor it.
     val hideLabel: Boolean = false,
     // In the private space: drawer and search only, never the home screen.

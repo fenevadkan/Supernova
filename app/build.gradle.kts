@@ -28,8 +28,8 @@ android {
         applicationId = "com.supernova.launcher"
         minSdk = 28
         targetSdk = 36
-        versionCode = 20
-        versionName = "v0.2.0"
+        versionCode = 21
+        versionName = "v0.2.1"
         // For app/src/androidTest (SmokeTest): read its warning before
         // running it on a phone in use.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -109,6 +109,16 @@ android {
         }
     }
 
+}
+
+// Settings > About > What's new shows the release notes the store listing
+// carries, so they ship in the app as assets (<versionCode>.txt each).
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addStaticSourceDirectory(
+            rootProject.file("fastlane/metadata/android/en-US/changelogs").path
+        )
+    }
 }
 
 detekt {

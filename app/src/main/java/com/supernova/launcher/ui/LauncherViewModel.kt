@@ -21,12 +21,16 @@ import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.DrawerGroupEdit
 import com.supernova.launcher.data.DrawerGroupOrder
 import com.supernova.launcher.data.DrawerGroupType
+import com.supernova.launcher.data.DrawerTarget
+import com.supernova.launcher.data.FolderMove
+import com.supernova.launcher.data.FolderToDrawer
 import com.supernova.launcher.data.GroupPick
 import com.supernova.launcher.data.IconPack
 import com.supernova.launcher.data.IconShape
 import com.supernova.launcher.data.ItemType
 import com.supernova.launcher.data.LabelOrder
 import com.supernova.launcher.data.LaunchableApp
+import com.supernova.launcher.data.LARGE_ICON_SPAN
 import com.supernova.launcher.data.LauncherItem
 import com.supernova.launcher.data.LauncherPreferences
 import com.supernova.launcher.data.LauncherPrefs
@@ -36,6 +40,7 @@ import com.supernova.launcher.data.PrefSpec
 import com.supernova.launcher.data.PrivateSpace
 import com.supernova.launcher.data.TabFolders
 import com.supernova.launcher.data.WorkspaceGeometry
+import com.supernova.launcher.data.isLargeIcon
 import com.supernova.launcher.data.imports.BackupFiles
 import com.supernova.launcher.data.imports.LayoutConverter
 import com.supernova.launcher.data.imports.PickedBackup
@@ -143,6 +148,21 @@ class LauncherViewModel(
     // need more than their own key written keep a function of their own.
     fun <T : Any> set(spec: PrefSpec<T>, value: T) = persist { preferences.set(spec, value) }
 
+    // Several settings in one write (the first run's looks). With replant,
+    // the planted first-run layout is built again for the grid they set.
+    fun setAll(writes: List<com.supernova.launcher.data.PrefWrite<*>>, replant: Boolean = false) = persist {
+        preferences.setAll(writes)
+        if (replant) {
+            val prefs = preferences.snapshot()
+            val items = withContext(Dispatchers.Default) {
+                DefaultLayoutBuilder.buildItems(
+                    getApplication(), catalog, prefs.gridCols, prefs.gridRows, prefs.dockCount
+                )
+            }
+            repository.replantDefaultLayout(items)
+        }
+    }
+
     private var appliedIconPack: String? = null
     private var appliedIconShape: IconShape? = null
     private var appliedIconShapeCustom: String? = null
@@ -184,7 +204,11 @@ class LauncherViewModel(
             }
         }
         viewModelScope.launch {
-            preferences.flow.collect { prefs ->
+            // A large icon draws at twice the desktop size, so the icons
+            // render for it while there is one.
+            val largeIcons = repository.modelFlow.map { model -> model.items.any { it.isLargeIcon } }
+                .distinctUntilChanged()
+            preferences.flow.combine(largeIcons) { prefs, large -> prefs to large }.collect { (prefs, large) ->
                 WorkspaceGeometry.allowWidgetOverlap = prefs.widgetOverlap
                 WorkspaceGeometry.allowPlacementOverlap = prefs.overlapWhenPlacing
                 val packChanged = prefs.iconPack != appliedIconPack
@@ -196,7 +220,7 @@ class LauncherViewModel(
                 val glassChanged = prefs.iconGlass != appliedGlass
                 val themedSig = themedIconSignature(prefs)
                 val themedChanged = themedSig != appliedThemedSig
-                val resolution = iconResolution(prefs)
+                val resolution = iconResolution(prefs, large)
                 val resolutionChanged = resolution != appliedResolution
                 val changes = listOf(
                     packChanged, shapeChanged, normalizeChanged, shadowChanged,
@@ -520,9 +544,9 @@ class LauncherViewModel(
 
     // The largest icon size any surface draws at, rounded up to a fifth so a
     // size slider's drag re-renders at a few steps rather than every tick.
-    private fun iconResolution(prefs: com.supernova.launcher.data.LauncherPrefs): Float {
+    private fun iconResolution(prefs: com.supernova.launcher.data.LauncherPrefs, largeIcons: Boolean): Float {
         val scales = listOf(
-            prefs.iconScale,
+            if (largeIcons) prefs.iconScale * LARGE_ICON_SPAN else prefs.iconScale,
             if (prefs.dockMatchDesktop) prefs.iconScale else prefs.dockIconScale,
             if (prefs.drawerMatchDesktop) prefs.iconScale else prefs.drawerIconScale,
             if (prefs.folderMatchDesktop) prefs.iconScale else prefs.folderIconScale
@@ -618,6 +642,18 @@ class LauncherViewModel(
     }
 
     fun restackItem(itemId: String, toFront: Boolean) = persist { repository.restackItem(itemId, toFront) }
+
+    // Long-press > Large icon / Normal icon. False, and nothing written,
+    // when the page has no room for a large one.
+    fun setIconSize(itemId: String, large: Boolean): Boolean {
+        val current = state.value
+        val cols = current.prefs.gridCols
+        val rows = current.prefs.gridRows
+        val shown = WorkspaceGeometry.fitted(current.model, cols, rows)
+        if (com.supernova.launcher.data.LargeIcons.withIconSize(shown, itemId, large, cols, rows) == null) return false
+        persist { repository.setIconSize(itemId, large, cols, rows) }
+        return true
+    }
 
     // A widget's padding in dp: its own, or the Widget padding setting's.
     fun widgetPaddingDp(item: LauncherItem): Int = item.widgetPadding ?: state.value.prefs.widgetPadding
@@ -822,10 +858,15 @@ class LauncherViewModel(
 
     fun setWidgetId(itemId: String, appWidgetId: Int) = persist { repository.setWidgetId(itemId, appWidgetId) }
 
-    fun resizeWidget(itemId: String, rect: WorkspaceGeometry.CellRect, onRefused: () -> Unit = {}) {
+    fun resizeWidget(
+        itemId: String,
+        rect: WorkspaceGeometry.CellRect,
+        onRefused: () -> Unit = {},
+        onSaved: () -> Unit = {}
+    ) {
         val prefs = state.value.prefs
         viewModelScope.launch {
-            if (!repository.resizeWidget(itemId, rect, prefs.gridCols, prefs.gridRows)) onRefused()
+            if (repository.resizeWidget(itemId, rect, prefs.gridCols, prefs.gridRows)) onSaved() else onRefused()
         }
     }
 
@@ -871,6 +912,13 @@ class LauncherViewModel(
 
     fun removeFeedCard(cardId: String) = persist { repository.removeFeedCard(cardId) }
 
+    fun restoreFeedCard(card: com.supernova.launcher.feed.FeedCard, index: Int) =
+        persist { repository.restoreFeedCard(card, index) }
+
+    fun feedOrder(): List<String> = state.value.model.feedOrder
+
+    fun setFeedOrder(keys: List<String>) = persist { repository.setFeedOrder(keys) }
+
     // "Pin": flips the stored flag; the feed re-sorts on the emission.
     fun setFeedCardPinned(cardId: String, pinned: Boolean) {
         val card = feedCards().firstOrNull { it.id == cardId } ?: return
@@ -885,6 +933,41 @@ class LauncherViewModel(
         val prefs = state.value.prefs
         viewModelScope.launch {
             repository.restoreItems(items, prefs.gridCols, prefs.gridRows, prefs.dockCount * prefs.dockPages.coerceAtLeast(1))
+        }
+    }
+
+    // A home or dock folder moved into the drawer (FolderToDrawer). Null,
+    // and nothing moved, when the folder holds no app a drawer group can.
+    fun moveFolderToDrawer(folder: LauncherItem, target: DrawerTarget): FolderMove? {
+        val members = folderMembers(folder.id)
+        val movable = FolderToDrawer.movable(members)
+        if (movable.isEmpty()) return null
+        val move = FolderMove(listOf(folder) + members, members.size - movable.size)
+        viewModelScope.launch {
+            // Named inside the edit, against what is stored.
+            preferences.updateDrawerGroups { groups ->
+                val name = FolderToDrawer.uniqueName(folder.label, groups.map { it.name })
+                move.groupName = name
+                FolderToDrawer.withGroupAdded(groups, folder, members, name, target)
+            }
+            repository.removeMovedFolder(folder.id)
+        }
+        return move
+    }
+
+    // The move's Undo: the group goes (and its place in a tab), and the
+    // folder comes back where it was.
+    fun undoFolderMove(move: FolderMove) {
+        val prefs = state.value.prefs
+        viewModelScope.launch {
+            move.groupName?.let { name ->
+                preferences.updateDrawerGroups { groups ->
+                    TabFolders.forgotten(groups.filterNot { it.name == name }, name)
+                }
+            }
+            repository.replaceItems(
+                move.items, prefs.gridCols, prefs.gridRows, prefs.dockCount * prefs.dockPages.coerceAtLeast(1)
+            )
         }
     }
 
@@ -1434,8 +1517,17 @@ class LauncherViewModel(
 
     // A backup file the user picked: Supernova's own, or another launcher's,
     // whose home screen is brought over.
-    suspend fun importBackupFile(uri: android.net.Uri): LauncherRepository.ImportResult = withContext(Dispatchers.IO) {
-        when (val picked = BackupFiles.read(getApplication(), uri)) {
+    // Read first, import after: the user confirms in between, told whether the
+    // file replaces settings too or only the home screen.
+    internal suspend fun readBackupFile(uri: android.net.Uri): PickedBackup = withContext(Dispatchers.IO) {
+        BackupFiles.read(getApplication(), uri)
+    }
+
+    internal suspend fun importPicked(picked: PickedBackup): LauncherRepository.ImportResult =
+        withContext(Dispatchers.IO) { importPickedNow(picked) }
+
+    private suspend fun importPickedNow(picked: PickedBackup): LauncherRepository.ImportResult =
+        when (picked) {
             is PickedBackup.Own -> importBackup(picked.json)
             is PickedBackup.Other -> repository.importLayout(
                 picked.layout,
@@ -1453,7 +1545,6 @@ class LauncherViewModel(
                 widgetBoundCheck()
             )
         }
-    }
 
     private fun isInstalled(packageName: String, userSerial: Long): Boolean =
         catalog.isInstalled(packageName, userSerial)
@@ -1478,6 +1569,28 @@ class LauncherViewModel(
             id in hostIds && provider != null &&
                 manager.getAppWidgetInfo(id)?.provider?.flattenToString() == provider
         }
+    }
+
+    data class FreeSpot(val page: Int, val cellX: Int, val cellY: Int)
+
+    // Where a tapped "Add to Home" puts something: the page given when it has
+    // room, else the next page with room (then the ones before it), else a
+    // new page after the last, which the pager shows once the item is on it.
+    // Null only when no page has room and no more pages can be added.
+    fun freeSpotFrom(page: Int, spanX: Int = 1, spanY: Int = 1): FreeSpot? {
+        val current = state.value
+        val model = current.model
+        val shown = maxOf(
+            1,
+            model.pageCount,
+            (model.items.filter { it.container == ContainerType.WORKSPACE }.maxOfOrNull { it.page } ?: -1) + 1
+        )
+        val start = page.coerceIn(0, shown - 1)
+        for (p in (start until shown) + (0 until start)) {
+            firstFreeWorkspaceCell(p, spanX, spanY)?.let { return FreeSpot(p, it.first, it.second) }
+        }
+        val fits = spanX <= current.prefs.gridCols && spanY <= current.prefs.gridRows
+        return if (fits && shown < LauncherRepository.MAX_PAGES) FreeSpot(shown, 0, 0) else null
     }
 
     // Null when the page has no free area of the requested size.

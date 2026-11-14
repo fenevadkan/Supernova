@@ -449,6 +449,20 @@ class LauncherRepository(private val context: Context) {
         mutateFitted(cols, rows) { current -> restored(current, items, cols, rows, dockSlots) }
     }
 
+    // A folder moved into the drawer leaves the home screen (FolderToDrawer).
+    suspend fun removeMovedFolder(folderId: String) {
+        mutate { current -> FolderToDrawer.homeAfterMove(current, folderId) }
+    }
+
+    // Undo of that move: what stayed behind (a shortcut that took the
+    // folder's place) gives way, and the folder comes back as it was.
+    suspend fun replaceItems(items: List<LauncherItem>, cols: Int, rows: Int, dockSlots: Int) {
+        val ids = items.mapTo(mutableSetOf()) { it.id }
+        mutateFitted(cols, rows) { current ->
+            restored(current.copy(items = current.items.filterNot { it.id in ids }), items, cols, rows, dockSlots)
+        }
+    }
+
     suspend fun addWidget(
         page: Int,
         cellX: Int,
@@ -542,6 +556,12 @@ class LauncherRepository(private val context: Context) {
                 }
             )
         }
+    }
+
+    // Long-press > Large icon / Normal icon. Nothing changes where the
+    // page has no room for it (the caller says so first).
+    suspend fun setIconSize(itemId: String, large: Boolean, cols: Int, rows: Int) {
+        mutateFitted(cols, rows) { current -> LargeIcons.withIconSize(current, itemId, large, cols, rows) ?: current }
     }
 
     suspend fun restackItem(itemId: String, toFront: Boolean) {
@@ -764,9 +784,33 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
+    // The card's key stays in feedOrder, so an Undo puts it back where it
+    // stood; the next reorder drops it.
     suspend fun removeFeedCard(cardId: String) {
         mutate { current ->
             current.copy(feedCards = current.feedCards.filterNot { it.id == cardId })
+        }
+    }
+
+    // Undo after a delete: the card back in its old slot of the list.
+    suspend fun restoreFeedCard(card: com.supernova.launcher.feed.FeedCard, index: Int) {
+        mutate { current ->
+            val cards = current.feedCards.filterNot { it.id == card.id }.toMutableList()
+            cards.add(index.coerceIn(0, cards.size), card)
+            current.copy(feedCards = cards)
+        }
+    }
+
+    // The feed's new card order. The cards list is put in the same order,
+    // so the drawer, search and the Cards page list them as the feed does.
+    suspend fun setFeedOrder(keys: List<String>) {
+        mutate { current ->
+            val order = com.supernova.launcher.feed.FeedOrder.resolve(keys, current.feedCards.map { it.id })
+            val rank = order.withIndex().associate { it.value to it.index }
+            current.copy(
+                feedOrder = order,
+                feedCards = current.feedCards.sortedBy { rank[it.id] ?: Int.MAX_VALUE }
+            )
         }
     }
 
@@ -953,6 +997,14 @@ class LauncherRepository(private val context: Context) {
         mutate { current -> if (current.items.isEmpty()) current.copy(items = items) else current }
     }
 
+    // The first run's grid step: the planted layout again, built for the
+    // grid just picked. Only ever over the layout the wizard planted, which
+    // nobody can have touched under it.
+    suspend fun replantDefaultLayout(items: List<LauncherItem>) {
+        if (items.isEmpty()) return
+        mutate { current -> current.copy(items = items) }
+    }
+
     // Settings > Reset to default. The auto-backup snapshot goes first so the
     // reset itself is recoverable from Automatic backups; then one atomic edit
     // replaces the model document and every LauncherPrefs key. Device-local
@@ -1084,6 +1136,9 @@ class LauncherRepository(private val context: Context) {
             cellY = target.cellY,
             workspaceX = target.workspaceX,
             workspaceY = target.workspaceY,
+            // A folder made on a large icon is as large.
+            spanX = target.spanX,
+            spanY = target.spanY,
             label = "Folder"
         )
 
@@ -1122,7 +1177,7 @@ class LauncherRepository(private val context: Context) {
             // Never over a layout this build couldn't read: an edit to the
             // empty stand-in would replace it for good.
             val current = decode(context.supernovaStore.data.first()[StoreKeys.model]) ?: return
-            val next = block(current)
+            val next = LargeIcons.withSmallIconsOffDesktop(block(current))
             if (next == current) return
             context.supernovaStore.edit { prefs ->
                 prefs[StoreKeys.model] = json.encodeToString(next)
@@ -1177,7 +1232,7 @@ class LauncherRepository(private val context: Context) {
         // displaced item's new spot is re-validated against the (possibly stale)
         // model this write actually sees; any mismatch abandons the whole
         // displacement rather than corrupting the layout.
-        private fun applyDisplacement(
+        internal fun applyDisplacement(
             current: LauncherModel,
             displace: List<WorkspaceGeometry.ReorderMove>,
             movingId: String?,
@@ -1196,12 +1251,14 @@ class LauncherRepository(private val context: Context) {
                             item, WorkspaceGeometry.displaced(WorkspaceGeometry.itemRect(item, cols, rows), m)
                         )
                     }
-                    val newCellX = (item.cellX + m.dCellX).coerceIn(0, cols - 1)
-                    val newCellY = (item.cellY + m.dCellY).coerceIn(0, rows - 1)
+                    val newCellX = (item.cellX + m.dCellX).coerceIn(0, (cols - item.spanX).coerceAtLeast(0))
+                    val newCellY = (item.cellY + m.dCellY).coerceIn(0, (rows - item.spanY).coerceAtLeast(0))
                     if (item.workspaceX == null || item.workspaceY == null || item.itemType == ItemType.WIDGET) {
                         item.copy(cellX = newCellX, cellY = newCellY)
                     } else if (m.snapToCell) {
-                        val (wx, wy) = WorkspaceGeometry.cellCenteredPosition(newCellX, newCellY, cols, rows)
+                        val (wx, wy) = WorkspaceGeometry.cellCenteredPosition(
+                            newCellX, newCellY, cols, rows, item.spanX to item.spanY
+                        )
                         item.copy(cellX = newCellX, cellY = newCellY, workspaceX = wx, workspaceY = wy)
                     } else {
                         // A pushed subgrid icon keeps its fractional offset.
@@ -1324,7 +1381,9 @@ class LauncherRepository(private val context: Context) {
             } else if (item.workspaceX == null || item.workspaceY == null) {
                 item.copy(cellX = cell.first, cellY = cell.second)
             } else {
-                val (centerX, centerY) = WorkspaceGeometry.cellCenteredPosition(cell.first, cell.second, cols, rows)
+                val (centerX, centerY) = WorkspaceGeometry.cellCenteredPosition(
+                    cell.first, cell.second, cols, rows, item.spanX to item.spanY
+                )
                 item.copy(cellX = cell.first, cellY = cell.second, workspaceX = centerX, workspaceY = centerY)
             }
         }
@@ -1451,6 +1510,9 @@ class LauncherRepository(private val context: Context) {
                 cellY = folder.cellY,
                 workspaceX = folder.workspaceX,
                 workspaceY = folder.workspaceY,
+                // A large folder's last app is as large.
+                spanX = folder.spanX,
+                spanY = folder.spanY,
                 rank = folder.rank,
                 folderId = null
             )

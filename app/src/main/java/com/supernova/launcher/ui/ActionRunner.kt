@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.Intent
 import android.os.Build
-import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -43,6 +42,8 @@ class ActionRunner(
         fun launchShortcut(packageName: String, shortcutId: String, userSerial: Long)
         fun launchIntentUri(uri: String)
         fun toggleDock()
+        // The dock's middle page, the one Home brings back.
+        fun showMainDockPage()
         fun showDesktopPreviews()
         fun openFeed()
         // The private space card, grown out of anchor (the action's home
@@ -90,6 +91,7 @@ class ActionRunner(
             GestureAction.DEFAULT_PAGE -> {
                 val model = viewModel.state.value.model
                 host.showPage(model.defaultPage.coerceIn(0, model.pageCount - 1))
+                host.showMainDockPage()
                 true
             }
             GestureAction.OPEN_SEARCH -> {
@@ -192,12 +194,10 @@ class ActionRunner(
     }
 
     // Recents and quick settings both need the accessibility service, same as
-    // lock; tell the user rather than failing silently.
+    // lock; say why and offer the way there, rather than fail silently or
+    // throw the user out of the home screen.
     private fun globalAction(performed: Boolean): Boolean {
-        if (!performed) {
-            Toast.makeText(activity, R.string.action_needs_accessibility, Toast.LENGTH_LONG).show()
-            openAccessibilitySettings()
-        }
+        if (!performed) PermissionPrompts.explainAccessibility(activity)
         return true
     }
 
@@ -209,17 +209,8 @@ class ActionRunner(
             if (!SupernovaDeviceAdmin.lock(activity)) promptDeviceAdmin()
             return true
         }
-        if (!SupernovaAccessibilityService.lockScreen()) {
-            Toast.makeText(activity, R.string.lock_needs_accessibility, Toast.LENGTH_LONG).show()
-            openAccessibilitySettings()
-        }
+        if (!SupernovaAccessibilityService.lockScreen()) PermissionPrompts.explainAccessibility(activity)
         return true
-    }
-
-    private fun openAccessibilitySettings() {
-        runLogged("open accessibility settings") {
-            activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
     }
 
     private fun promptDeviceAdmin() {

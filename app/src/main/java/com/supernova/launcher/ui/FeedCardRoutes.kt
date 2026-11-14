@@ -3,7 +3,6 @@ package com.supernova.launcher.ui
 import android.graphics.drawable.Drawable
 import android.text.format.DateUtils
 import android.view.View
-import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.supernova.launcher.R
@@ -28,7 +27,10 @@ class FeedCardRoutes(
     fun edit(card: FeedCard?) {
         CustomCardEditorSheet.show(
             activity, viewModel, card,
-            onPickWidget = { cardId -> widgets().showPickerForCard(cardId) }
+            widgetFlow = CustomCardEditorSheet.WidgetFlow(
+                pick = { onPicked -> widgets().showPickerForCard(onPicked) },
+                bind = { info, cardId -> widgets().bindToCard(info, cardId) }
+            )
         )
     }
 
@@ -40,9 +42,17 @@ class FeedCardRoutes(
         }
     }
 
+    // Moving a card up or down the feed, from its menu. Only the feed has
+    // an order to move in; the drawer and search pass none.
+    interface Moves {
+        fun canMove(key: String, up: Boolean): Boolean
+
+        fun move(key: String, up: Boolean)
+    }
+
     // One binder per surface: the look is shared, the after-launch step is
     // not (search and the drawer close themselves, the feed stays).
-    fun binder(afterLaunch: (() -> Unit)?): CardViewBinder =
+    fun binder(afterLaunch: (() -> Unit)?, moves: Moves? = null): CardViewBinder =
         CardViewBinder(
             CardViewBinder.Callbacks(
                 onLaunchTarget = { type, target, _ ->
@@ -52,9 +62,11 @@ class FeedCardRoutes(
                 widgetView = { card -> widgets().cardWidgetView(card) },
                 iconForTarget = ::iconForCardTarget,
                 labelForTarget = ::labelForCardTarget,
-                onMenu = { card, anchor -> showCardMenu(card, anchor) },
+                onMenu = { card, anchor -> showCardMenu(card, anchor, moves) },
                 onHistory = { card, _ -> showCardHistory(card) }
-            )
+            ),
+            // In the feed a long-press picks the card up instead.
+            longPressMenu = moves == null
         )
 
     // The history mark: when the card last activated (its conditions all
@@ -118,18 +130,38 @@ class FeedCardRoutes(
         }
     }
 
-    // The card menu: Settings (edit) and Pin.
-    private fun showCardMenu(card: FeedCard, anchor: View) {
-        val menu = PopupMenu(activity, anchor)
-        menu.menu.add(0, 1, 0, R.string.card_menu_edit)
-        menu.menu.add(0, 2, 1, if (card.pinned) R.string.card_menu_unpin else R.string.card_menu_pin)
-        menu.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> edit(card)
-                2 -> viewModel.setFeedCardPinned(card.id, !card.pinned)
+    // The card menu: Settings (edit), Pin, Move up / Move down (in the feed,
+    // where there is room to move), and Delete with an Undo.
+    private fun showCardMenu(card: FeedCard, anchor: View, moves: Moves?) {
+        val entries = buildList<Pair<Int, () -> Unit>> {
+            add(R.string.card_menu_edit to { edit(card) })
+            add(
+                (if (card.pinned) R.string.card_menu_unpin else R.string.card_menu_pin) to
+                    { viewModel.setFeedCardPinned(card.id, !card.pinned) }
+            )
+            if (moves?.canMove(card.id, up = true) == true) {
+                add(R.string.card_menu_move_up to { moves.move(card.id, up = true) })
             }
-            true
+            if (moves?.canMove(card.id, up = false) == true) {
+                add(R.string.card_menu_move_down to { moves.move(card.id, up = false) })
+            }
+            add(R.string.card_delete to { delete(card, anchor) })
         }
-        menu.show()
+        ChoiceMenu.showActions(
+            anchor, viewModel.state.value.prefs, entries.map { activity.getString(it.first) }
+        ) { which -> entries[which].second() }
+    }
+
+    // Undo puts the card back in the slot it had, not at the end.
+    private fun delete(card: FeedCard, anchor: View) {
+        val index = viewModel.feedCards().indexOfFirst { it.id == card.id }
+        viewModel.removeFeedCard(card.id)
+        com.google.android.material.snackbar.Snackbar
+            .make(
+                anchor.rootView, R.string.card_deleted,
+                com.google.android.material.snackbar.Snackbar.LENGTH_LONG
+            )
+            .setAction(R.string.undo) { viewModel.restoreFeedCard(card, index.coerceAtLeast(0)) }
+            .show()
     }
 }
