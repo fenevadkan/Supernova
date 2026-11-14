@@ -77,7 +77,6 @@ class AppCatalog(
     // Serializes icon composition: the pack drawables and renderer state are
     // shared and mutated during render, and pre-warm runs off the main thread.
     private val renderLock = Any()
-    private val waiters = IconWaiters()
     private var changeCallback: LauncherApps.Callback? = null
     // One listener per live view model; the system callback behind them is
     // registered once and stays for as long as any of them does.
@@ -100,6 +99,7 @@ class AppCatalog(
                     label = info.label?.toString().orEmpty(),
                     userSerial = serial,
                     installTime = info.firstInstallTime,
+                    sizeBytes = sizes.getOrPut("$serial/${component.packageName}") { installedSize(info) },
                     privateSpace = isPrivate
                 )
             }
@@ -151,11 +151,7 @@ class AppCatalog(
         }
     }
 
-    // An app's icon, rendered now if it isn't cached. Whoever waits here (a
-    // bind, the first run's preview) goes ahead of the background warm.
-    fun iconFor(app: LaunchableApp): Drawable? = waiters.ahead { renderIcon(app) }
-
-    private fun renderIcon(app: LaunchableApp): Drawable? {
+    fun iconFor(app: LaunchableApp): Drawable? {
         val cacheKey = "${app.userSerial}/${app.packageName}/${app.className}"
         iconCache.get(cacheKey)?.let { return it }
         val user = userForSerial(app.userSerial) ?: return null
@@ -324,14 +320,8 @@ class AppCatalog(
 
     // Renders every app's icon into the cache off the main thread, so binds
     // become cache-hit-only. Safe to call repeatedly; hits return instantly.
-    // It pauses between icons while anyone waits in iconFor: a change of
-    // icon settings starts a warm of every app, and the icons on screen
-    // queued behind it for the render lock, a whole warm late.
     fun warmIcons(apps: List<LaunchableApp>) {
-        for (app in apps) {
-            waiters.stepAside()
-            renderIcon(app)
-        }
+        apps.forEach { iconFor(it) }
     }
 
     fun applyIconPack(packageName: String?) = synchronized(renderLock) {
@@ -410,79 +400,52 @@ class AppCatalog(
             android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU
         ) return null
         val icon = resolveActivity(packageName, className, user)?.getIcon(0) ?: return null
+        val mono = (icon as? android.graphics.drawable.AdaptiveIconDrawable)?.monochrome
+        if (mono != null) {
+            return runLogged("tint themed icon") {
+                val fg = (mono.constantState?.newDrawable()?.mutate() ?: mono).apply { setTint(themedIconFg) }
+                android.graphics.drawable.AdaptiveIconDrawable(
+                    android.graphics.drawable.ColorDrawable(themedIconBg), fg
+                )
+            }.getOrNull()
+        }
         // Autogen (D8): no monochrome layer shipped - synthesize one from the
-        // icon's picture. A per-app force also gets the synthetic layer. When
-        // no glyph would read (a photo, a gradient tile), the whole icon is
-        // redrawn in the themed colours instead.
-        val shipsMono = (icon as? android.graphics.drawable.AdaptiveIconDrawable)?.monochrome != null
-        if (!shipsMono && !themedIconsAutogen && !force) return null
-        return runLogged("tint themed icon") {
-            themedLayer(icon, ThemedGlyph::forApp) ?: tintedCopy(icon)
-        }.getOrNull()
+        // icon's silhouette. A per-app force also gets the synthetic layer.
+        if (!themedIconsAutogen && !force) return null
+        return runLogged("generate themed icon") { autogenMonochrome(icon) }.getOrNull()
     }
 
-    // Any icon's themed look: its monochrome layer in the themed colours
-    // when it ships one, else the glyph `pick` reads off its picture (see
-    // ThemedGlyph); null when `pick` finds none.
-    private fun themedLayer(icon: Drawable, pick: (IntArray, Int, Int) -> IntArray?): Drawable? {
-        val mono = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            (icon as? android.graphics.drawable.AdaptiveIconDrawable)?.monochrome
+    // Rasterizes the adaptive foreground (or the whole legacy icon, inset
+    // toward the safe zone so the mask doesn't crop it), keeps only its
+    // alpha, and tints that silhouette like a real monochrome layer.
+    private fun autogenMonochrome(icon: Drawable): Drawable {
+        val adaptive = icon as? android.graphics.drawable.AdaptiveIconDrawable
+        val source = adaptive?.foreground ?: icon
+        val size = 192
+        val silhouette = android.graphics.Bitmap.createBitmap(
+            size, size, android.graphics.Bitmap.Config.ARGB_8888
+        )
+        val canvas = android.graphics.Canvas(silhouette)
+        if (adaptive == null) {
+            val inset = (size * 0.2f).toInt()
+            source.setBounds(inset, inset, size - inset, size - inset)
         } else {
-            null
+            source.setBounds(0, 0, size, size)
         }
-        val fg = if (mono != null) {
-            (mono.constantState?.newDrawable()?.mutate() ?: mono).apply { setTint(themedIconFg) }
-        } else {
-            generatedGlyph(icon, pick) ?: return null
-        }
-        return android.graphics.drawable.AdaptiveIconDrawable(android.graphics.drawable.ColorDrawable(themedIconBg), fg)
-    }
-
-    // Lets `pick` choose a glyph's alpha off the icon's foreground (see
-    // iconPixels) and draws it in the themed glyph colour.
-    private fun generatedGlyph(icon: Drawable, pick: (IntArray, Int, Int) -> IntArray?): Drawable? {
-        val alpha = pick(iconPixels(icon, withBackground = false), GLYPH_PX, GLYPH_PX) ?: return null
-        val rgb = themedIconFg and RGB_BITS
-        return pixelsDrawable(IntArray(alpha.size) { (alpha[it] shl ALPHA_SHIFT) or rgb })
-    }
-
-    // An icon with no glyph to read, its whole picture in the themed
-    // colours on the themed plate (see ThemedGlyph.tinted).
-    private fun tintedCopy(icon: Drawable): Drawable {
-        val pixels = ThemedGlyph.tinted(iconPixels(icon, withBackground = true), themedIconBg, themedIconFg)
+        source.draw(canvas)
+        val alpha = silhouette.extractAlpha()
+        val tinted = android.graphics.Bitmap.createBitmap(
+            size, size, android.graphics.Bitmap.Config.ARGB_8888
+        )
+        android.graphics.Canvas(tinted).drawBitmap(
+            alpha, 0f, 0f,
+            android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = themedIconFg }
+        )
         return android.graphics.drawable.AdaptiveIconDrawable(
             android.graphics.drawable.ColorDrawable(themedIconBg),
-            pixelsDrawable(pixels)
+            android.graphics.drawable.BitmapDrawable(context.resources, tinted)
         )
     }
-
-    // The icon's picture on the adaptive icon's full canvas: its foreground
-    // (with its background too, for `withBackground`), or the whole legacy
-    // icon, inset toward the safe zone so the mask doesn't crop it.
-    private fun iconPixels(icon: Drawable, withBackground: Boolean): IntArray {
-        val size = GLYPH_PX
-        val picture = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(picture)
-        val adaptive = icon as? android.graphics.drawable.AdaptiveIconDrawable
-        val layers = when {
-            adaptive == null -> listOf(icon)
-            withBackground -> listOfNotNull(adaptive.background, adaptive.foreground)
-            else -> listOfNotNull(adaptive.foreground)
-        }
-        val inset = if (adaptive == null) (size * LEGACY_INSET).toInt() else 0
-        layers.forEach {
-            it.setBounds(inset, inset, size - inset, size - inset)
-            it.draw(canvas)
-        }
-        val pixels = IntArray(size * size).also { picture.getPixels(it, 0, size, 0, 0, size, size) }
-        picture.recycle()
-        return pixels
-    }
-
-    private fun pixelsDrawable(pixels: IntArray): Drawable = android.graphics.drawable.BitmapDrawable(
-        context.resources,
-        android.graphics.Bitmap.createBitmap(pixels, GLYPH_PX, GLYPH_PX, android.graphics.Bitmap.Config.ARGB_8888)
-    )
 
     fun applyIconShadow(value: Boolean) = synchronized(renderLock) {
         if (iconRenderer.shadow == value) return
@@ -555,6 +518,18 @@ class AppCatalog(
         )
     }
 
+
+    // The app's APKs on disk, the "App size" line of its system info page.
+    // Data and cache would need usage access (StorageStatsManager), so they
+    // are left out; a file that can't be read counts as nothing.
+    private fun installedSize(info: LauncherActivityInfo): Long {
+        val app = info.applicationInfo
+        val paths = listOfNotNull(app.sourceDir) + app.splitSourceDirs.orEmpty()
+        return paths.sumOf { path -> runCatching { java.io.File(path).length() }.getOrDefault(0L) }
+    }
+
+
+    
     // ApplicationInfo.category for Smart Folders; UNDEFINED when the package
     // is missing (e.g. a work-profile-only app not visible to plain PM).
     fun appCategory(packageName: String): Int = runCatching {
@@ -654,27 +629,6 @@ class AppCatalog(
         runLogged("render picture") { iconRenderer.renderPicture(picture, iconShape, customShapeSpec) }.getOrNull()
     }
 
-    // A shortcut's icon as its Edit left it (see ShortcutIcons), from its
-    // stored picture `own`; null when the edit changes no icon, or there is
-    // nothing to draw. Themed asks the app for the shortcut's icon: the
-    // stored picture is flattened, so it has no layer to theme.
-    fun renderShortcutIcon(item: LauncherItem, own: android.graphics.Bitmap?): Drawable? {
-        val edit = item.shortcutEdit?.takeIf(ShortcutIcons::changesIcon) ?: return null
-        val live = if (edit.iconVariant == "THEMED" && !ShortcutIcons.hasPickedIcon(edit)) liveIcon(item) else null
-        return synchronized(renderLock) {
-            runLogged("render shortcut icon") {
-                ShortcutIcons(iconRenderer, customShapeSpec, iconShape, ::packDrawable, ::pickedPicture) {
-                    themedLayer(it, ThemedGlyph::forShortcut) ?: it
-                }.draw(edit, live ?: own?.toDrawable(context.resources), own.takeIf { item.shortcutId != null })
-            }.getOrNull()
-        }
-    }
-
-    private fun liveIcon(item: LauncherItem): Drawable? =
-        item.packageName?.takeIf { item.shortcutId != null }
-            ?.let { pkg -> shortcutsFor(pkg, item.userSerial).firstOrNull { it.id == item.shortcutId } }
-            ?.let(::shortcutIcon)
-
     fun launch(
         app: LaunchableApp,
         sourceBounds: android.graphics.Rect? = null,
@@ -708,24 +662,10 @@ class AppCatalog(
         }
     }
 
-    // The activity an icon brought in from elsewhere should launch: the one
-    // it names while the app still has it, else the app's first launcher
-    // activity. An app that is not here keeps what it names.
-    fun launchActivity(packageName: String, className: String?, userSerial: Long): String? {
-        val user = userForSerial(userSerial) ?: return className
-        val activities = runCatching { launcherApps.getActivityList(packageName, user) }.getOrDefault(emptyList())
-            .map { it.componentName.className }
-        return className?.takeIf { activities.isEmpty() || it in activities } ?: activities.firstOrNull()
-    }
-
     fun isInstalled(packageName: String, userSerial: Long): Boolean {
         val user = userForSerial(userSerial) ?: return false
         return runCatching { launcherApps.isPackageEnabled(packageName, user) }.getOrDefault(false)
     }
-
-    // Whether the app is surely gone for that user (see InstalledApps).
-    fun isUninstalled(packageName: String, userSerial: Long): Boolean =
-        userForSerial(userSerial)?.let { InstalledApps.isGone(launcherApps, userManager, packageName, it) } == true
 
     // The private space profile (Android 15+), seen only while this is the
     // default home app and holds ACCESS_HIDDEN_PROFILES.
@@ -757,25 +697,6 @@ class AppCatalog(
     fun setPrivateSpaceLocked(locked: Boolean): Boolean {
         val user = privateSpaceUser() ?: return false
         return runLogged("lock private space") { userManager.requestQuietModeEnabled(locked, user) }.getOrDefault(false)
-    }
-
-    private fun workUsers(): List<UserHandle> = runCatching {
-        WorkProfiles.workUsers(launcherApps.profiles, android.os.Process.myUserHandle(), privateSpaceUser())
-    }.getOrDefault(emptyList())
-
-    private fun isPaused(user: UserHandle): Boolean =
-        runCatching { userManager.isQuietModeEnabled(user) }.getOrDefault(false)
-
-    // The serials of the work profiles whose apps are paused.
-    fun pausedWorkProfiles(): Set<Long> =
-        workUsers().filter(::isPaused).mapTo(mutableSetOf(), ::serialFor)
-
-    // Pausing takes effect at once; turning work apps on may ask for the
-    // work profile's own lock first, through the system's prompt.
-    fun setWorkPaused(paused: Boolean) {
-        WorkProfiles.toToggle(workUsers(), ::isPaused, paused).forEach { user ->
-            runLogged("pause work apps") { userManager.requestQuietModeEnabled(paused, user) }
-        }
     }
 
     // Android 16 on; Android 15 offers launchers no way in.
@@ -887,17 +808,7 @@ class AppCatalog(
     }
 
     companion object {
-
         // The size charged for a cached icon that reports none of its own.
         private const val FALLBACK_ICON_PX = 192
-
-        // An ARGB int's alpha byte, and its colour without it.
-        private const val ALPHA_SHIFT = 24
-        private const val RGB_BITS = 0xFFFFFF
-
-        // Generated themed icons: the canvas they're read off and drawn at,
-        // and how far a legacy icon sits in from its edges.
-        private const val GLYPH_PX = 192
-        private const val LEGACY_INSET = 0.2f
     }
 }
