@@ -22,7 +22,8 @@ enum class DrawerSort {
     ALPHA_REVERSE,
     INSTALL_DATE,
     MOST_USED,
-    RECENTLY_USED;
+    RECENTLY_USED,
+    APP_SIZE;
 
     // Only the name orders have letters to scroll by.
     val byName: Boolean get() = this == ALPHA || this == ALPHA_REVERSE

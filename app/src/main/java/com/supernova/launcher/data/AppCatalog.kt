@@ -84,6 +84,7 @@ class AppCatalog(
 
     fun listLaunchableApps(): List<LaunchableApp> {
         val infoCache = mutableMapOf<String, LauncherActivityInfo>()
+        val sizes = mutableMapOf<String, Long>()
         val privateUser = privateSpaceUser()
         val apps = launcherApps.profiles.flatMap { user ->
             val serial = serialFor(user)
@@ -529,7 +530,6 @@ class AppCatalog(
     }
 
 
-    
     // ApplicationInfo.category for Smart Folders; UNDEFINED when the package
     // is missing (e.g. a work-profile-only app not visible to plain PM).
     fun appCategory(packageName: String): Int = runCatching {
