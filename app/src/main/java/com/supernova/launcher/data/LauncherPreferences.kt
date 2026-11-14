@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.mutablePreferencesOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -23,8 +24,15 @@ class LauncherPreferences(private val context: Context) {
         context.supernovaStore.edit { spec.write(it, value) }
     }
 
+    // Several settings in one edit, as the first run's looks write them.
+    suspend fun setAll(writes: List<PrefWrite<*>>) {
+        if (writes.isEmpty()) return
+        context.supernovaStore.edit { target -> writes.forEach { it.into(target) } }
+    }
+
     companion object {
-        private const val RECENT_LAUNCHES_MAX = 12
+        // Enough to put most of a phone's apps in Recently used order.
+        private const val RECENT_LAUNCHES_MAX = 100
         const val MAX_RECENT_SEARCHES = 8
 
         // Every LauncherPrefs field to its key (see Pref), so a setting that
@@ -34,6 +42,16 @@ class LauncherPreferences(private val context: Context) {
 
         // The read-side twin: what the store holds, on LauncherPrefs' defaults.
         fun decode(values: Preferences): LauncherPrefs = PrefStoreFormat.read(values)
+
+        // What the settings come to once `writes` land, worked out the way
+        // the store reads them back, so it compares equal to what the store
+        // then holds.
+        fun applied(prefs: LauncherPrefs, writes: List<PrefWrite<*>>): LauncherPrefs {
+            val target = mutablePreferencesOf()
+            writeAll(target, prefs)
+            writes.forEach { it.into(target) }
+            return decode(target)
+        }
 
         // The stored drawer groups once a smart-folder regeneration lands:
         // the user's own groups as they were, plus the generated folders.
@@ -92,14 +110,6 @@ class LauncherPreferences(private val context: Context) {
             val undecodable = stored.filter { DrawerGroup.decode(it) == null }
             val groups = stored.mapNotNull { DrawerGroup.decode(it) }
             prefs[Pref.drawerGroups.key] = (undecodable + transform(groups).map { it.encode() }).toSet()
-        }
-    }
-
-    suspend fun removeDrawerGroup(name: String) {
-        context.supernovaStore.edit { prefs ->
-            prefs[Pref.drawerGroups.key] = prefs[Pref.drawerGroups.key].orEmpty()
-                .filterNot { DrawerGroup.decode(it)?.name == name }
-                .toSet()
         }
     }
 

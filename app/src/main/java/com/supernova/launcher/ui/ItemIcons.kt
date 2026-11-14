@@ -9,6 +9,7 @@ import com.supernova.launcher.data.CustomShapeSpec
 import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.GalleryIconCodec
 import com.supernova.launcher.data.ItemType
+import com.supernova.launcher.data.LabelOrder
 import com.supernova.launcher.data.LaunchableApp
 import com.supernova.launcher.data.LauncherItem
 import com.supernova.launcher.gesture.ActionShortcut
@@ -106,9 +107,7 @@ class ItemIcons(private val context: Context, private val viewModel: LauncherVie
             folder.iconBase64, folder.customIconPack, folder.customIconName, folder.iconRaw, isFolder = true
         )
             ?.let { return it }
-        val memberIcons = viewModel.folderMembers(folder.id)
-            // The dense styles (3x3, dense ring) show up to nine members.
-            .take(PREVIEW_MEMBERS)
+        val memberIcons = previewMembers(viewModel.folderMembers(folder.id)) { it.label }
             .mapNotNull { member ->
                 member.takeIf { it.itemType == ItemType.SHORTCUT }?.let(::intentItemIcon)
                     ?: member.packageName?.let { pkg ->
@@ -122,7 +121,26 @@ class ItemIcons(private val context: Context, private val viewModel: LauncherVie
 
     fun drawerFolderIcon(group: DrawerGroup, members: List<LaunchableApp>): Drawable =
         customFolderIcon(group.iconBase64, group.iconPack, group.iconName, group.iconRaw, isFolder = true)
-            ?: composedFolderIcon(members.mapNotNull { app -> viewModel.appCatalog().iconFor(app) })
+            ?: composedFolderIcon(
+                previewMembers(members) { it.label }
+                    .mapNotNull { app -> viewModel.appCatalog().iconFor(app) }
+            )
+
+    // The members a folder's preview draws: the window's own order (A-Z
+    // when the folder sort says so), picked as the window lays them out
+    // (FolderPreviewPick). The dense styles (3x3, dense ring) show up to
+    // nine.
+    private fun <T> previewMembers(members: List<T>, label: (T) -> String): List<T> {
+        val prefs = viewModel.state.value.prefs
+        val ordered = if (prefs.folderSortAz) LabelOrder.sorted(members, label = label) else members
+        val columns = FolderPopup.columnsFor(
+            context, ordered.size, prefs.folderColumns, prefs.folderMode == FolderMode.IMMERSIVE,
+            if (prefs.folderMatchDesktop) prefs.iconScale else prefs.folderIconScale
+        )
+        return FolderPreviewPick.shown(
+            ordered, columns, prefs.folderPreviewStyle, prefs.folderPrioritizeFirst, PREVIEW_MEMBERS
+        )
+    }
 
     fun customFolderIcon(
         photo: String?,
@@ -182,9 +200,15 @@ class ItemIcons(private val context: Context, private val viewModel: LauncherVie
 
     // Icon for a SHORTCUT item carrying an intentUri: a launcher-action tile by
     // action, or the snapshot icon activities/legacy shortcuts stored. Null for
-    // a plain app shortcut, which falls back to the app's own icon.
+    // a plain app shortcut, which falls back to the app's own icon. An icon
+    // picked in the shortcut's Edit, or its picture in the shape and style
+    // picked there, outranks both, drawn as an app's is.
     fun intentItemIcon(item: LauncherItem): Drawable? {
         val catalog = viewModel.appCatalog()
+        if (item.shortcutEdit != null) {
+            val own = item.iconBase64?.takeIf { it.isNotEmpty() }?.let { GalleryIconCodec.decode(it) }
+            catalog.renderShortcutIcon(item, own)?.let { return it }
+        }
         item.intentUri?.let { uri ->
             ActionShortcut.decode(uri)?.let { binding ->
                 customFolderIcon(item.iconBase64, item.customIconPack, item.customIconName, item.iconRaw)

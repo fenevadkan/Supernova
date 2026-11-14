@@ -418,6 +418,15 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
+    // A shortcut's own Edit, saved in one write: its name (blank keeps the
+    // one it has), hidden label, custom icon, shape and style. An empty edit
+    // is stored as none.
+    suspend fun editShortcut(itemId: String, label: String, edit: AppOverride) {
+        mutate { current ->
+            current.copy(items = current.items.map { ShortcutEdits.apply(it, itemId, label, edit) })
+        }
+    }
+
     suspend fun removeItem(itemId: String) {
         mutate { current ->
             val removedItem = current.items.firstOrNull { it.id == itemId }
@@ -709,6 +718,11 @@ class LauncherRepository(private val context: Context) {
         mutate { FolderSort.sorted(it, folderId) }
     }
 
+    // An app moved inside the open folder: the members in the order it shows.
+    suspend fun reorderFolder(folderId: String, orderedIds: List<String>) {
+        mutate { FolderSort.reordered(it, folderId, orderedIds) }
+    }
+
     suspend fun setFolderIconRaw(folderId: String, raw: Boolean) {
         mutate { current ->
             current.copy(items = current.items.map { item ->
@@ -822,7 +836,9 @@ class LauncherRepository(private val context: Context) {
     data class ImportResult(
         val restored: Int,
         val droppedMissingApps: Int,
-        val widgetsNeedingRebind: Int
+        val widgetsNeedingRebind: Int,
+        // Another launcher's items Supernova has no place for.
+        val leftOut: Int = 0
     ) {
         // What an import tells the user: "Restored 12 items, skipped 1
         // missing app".
@@ -834,6 +850,7 @@ class LauncherRepository(private val context: Context) {
             if (widgetsNeedingRebind > 0) {
                 append(res.getQuantityString(R.plurals.backup_widgets_rebind, widgetsNeedingRebind, widgetsNeedingRebind))
             }
+            if (leftOut > 0) append(res.getQuantityString(R.plurals.backup_left_out, leftOut, leftOut))
         }
     }
 
@@ -846,7 +863,45 @@ class LauncherRepository(private val context: Context) {
         // this same install, with its widget still up.
         widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
     ): ImportResult {
-        val payload = json.decodeFromString<BackupPayload>(raw)
+        val payload = runCatching { json.decodeFromString<BackupPayload>(raw) }.getOrElse {
+            throw com.supernova.launcher.data.imports.UnreadableBackupException("not a launcher backup")
+        }
+        return restore(payload, currentPrefs, isInstalled, widgetBound)
+    }
+
+    // Another launcher's home screen in place of this one: its icons, folders
+    // and widgets where they were, the grids sized to hold them. Everything
+    // else stays Supernova's: the other settings, per-app looks, feed cards.
+    internal suspend fun importLayout(
+        layout: com.supernova.launcher.data.imports.ForeignLayout,
+        currentPrefs: LauncherPrefs,
+        phone: com.supernova.launcher.data.imports.LayoutConverter.Phone,
+        isInstalled: (packageName: String, userSerial: Long) -> Boolean,
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+    ): ImportResult {
+        val converted = com.supernova.launcher.data.imports.LayoutConverter.convert(layout, currentPrefs, phone)
+        if (converted.items.isEmpty()) {
+            throw com.supernova.launcher.data.imports.UnreadableBackupException("nothing in the backup to bring over")
+        }
+        val payload = BackupPayload(
+            exportedAtEpochMs = System.currentTimeMillis(),
+            model = modelFlow.first().copy(
+                items = converted.items, pageCount = converted.pageCount, defaultPage = converted.defaultPage
+            ),
+            prefs = converted.prefs
+        )
+        val restored = restore(payload, currentPrefs, isInstalled, widgetBound)
+        return restored.copy(
+            droppedMissingApps = restored.droppedMissingApps + converted.missing, leftOut = converted.skipped
+        )
+    }
+
+    private suspend fun restore(
+        payload: BackupPayload,
+        currentPrefs: LauncherPrefs,
+        isInstalled: (packageName: String, userSerial: Long) -> Boolean,
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+    ): ImportResult {
         val migrated = ModelMigrations.migrate(payload.model)
 
         // Apps that vanished since the backup would render as dead icons.
@@ -896,6 +951,14 @@ class LauncherRepository(private val context: Context) {
     suspend fun seedDefaultLayout(items: List<LauncherItem>) {
         if (items.isEmpty()) return
         mutate { current -> if (current.items.isEmpty()) current.copy(items = items) else current }
+    }
+
+    // The first run's grid step: the planted layout again, built for the
+    // grid just picked. Only ever over the layout the wizard planted, which
+    // nobody can have touched under it.
+    suspend fun replantDefaultLayout(items: List<LauncherItem>) {
+        if (items.isEmpty()) return
+        mutate { current -> current.copy(items = items) }
     }
 
     // Settings > Reset to default. The auto-backup snapshot goes first so the

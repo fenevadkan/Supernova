@@ -25,6 +25,7 @@ import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupExtraRow
 import com.supernova.launcher.ui.ScrollEffect
 import com.supernova.launcher.ui.StatusBarIcons
+import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.WallpaperScrollMode
 import com.supernova.launcher.data.IconGlass
 import com.supernova.launcher.data.ReshapeLegacy
@@ -233,6 +234,19 @@ object EnumLabels {
     }
 
     @StringRes
+    fun of(content: com.supernova.launcher.ui.DrawerTabContent): Int = when (content) {
+        com.supernova.launcher.ui.DrawerTabContent.LABEL -> R.string.tab_content_label
+        com.supernova.launcher.ui.DrawerTabContent.ICON -> R.string.tab_content_icon
+        com.supernova.launcher.ui.DrawerTabContent.LABEL_AND_ICON -> R.string.tab_content_both
+    }
+
+    @StringRes
+    fun of(align: com.supernova.launcher.ui.DrawerTabAlign): Int = when (align) {
+        com.supernova.launcher.ui.DrawerTabAlign.START -> R.string.tab_align_start
+        com.supernova.launcher.ui.DrawerTabAlign.CENTER -> R.string.tab_align_center
+    }
+
+    @StringRes
     fun of(category: SmartCategory): Int = when (category) {
         SmartCategory.GAMES -> R.string.category_games
         SmartCategory.ENTERTAINMENT -> R.string.category_entertainment
@@ -263,12 +277,20 @@ object EnumLabels {
         DrawerSort.ALPHA_REVERSE -> R.string.sort_alpha_reverse
         DrawerSort.INSTALL_DATE -> R.string.sort_install
         DrawerSort.MOST_USED -> R.string.sort_most_used
+        DrawerSort.RECENTLY_USED -> R.string.sort_recently_used
+    }
+
+    @StringRes
+    fun of(sort: TopRowSort): Int = when (sort) {
+        TopRowSort.RECENTLY_USED -> R.string.sort_recently_used
+        TopRowSort.MOST_USED -> R.string.sort_most_used
+        TopRowSort.INSTALL_DATE -> R.string.sort_install
+        TopRowSort.ALPHA -> R.string.sort_alpha
     }
 
     @StringRes
     fun of(style: DockBgStyle): Int = when (style) {
         DockBgStyle.NONE -> R.string.dock_bg_none
-        DockBgStyle.PILL -> R.string.dock_bg_pill
         DockBgStyle.ROUNDED -> R.string.dock_bg_rounded
         DockBgStyle.SQUARE -> R.string.dock_bg_square
     }
@@ -282,8 +304,8 @@ object EnumLabels {
     }
 
     @StringRes
-    fun of(orientation: HomeOrientation): Int = when (orientation) {
-        HomeOrientation.DEFAULT -> R.string.orientation_default
+    fun of(orientation: HomeOrientation, wide: Boolean = false): Int = when (orientation) {
+        HomeOrientation.DEFAULT -> if (wide) R.string.orientation_default_tablet else R.string.orientation_default
         HomeOrientation.AUTO_ROTATE -> R.string.orientation_auto_rotate
         HomeOrientation.PORTRAIT -> R.string.orientation_portrait
         HomeOrientation.LANDSCAPE -> R.string.orientation_landscape

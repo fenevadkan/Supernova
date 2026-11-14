@@ -3,6 +3,7 @@ package com.supernova.launcher.data
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import com.supernova.launcher.search.WebProvider
 import com.supernova.launcher.ui.AnimationSpeed
+import com.supernova.launcher.ui.DrawerSort
 import com.supernova.launcher.ui.DrawerTabBar
 import com.supernova.launcher.ui.FolderMode
 import com.supernova.launcher.ui.FolderScroll
@@ -11,6 +12,7 @@ import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
 import com.supernova.launcher.ui.StatusBarIcons
+import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -59,6 +61,9 @@ class BackupRoundTripTest {
         drawerAutoKeyboard = true,
         drawerTabBar = DrawerTabBar.BOTTOM,
         drawerFrequentRow = true,
+        drawerSort = DrawerSort.RECENTLY_USED,
+        drawerTopRowSort = TopRowSort.INSTALL_DATE,
+        drawerSortButtons = false,
         drawerRememberPosition = true,
         drawerAutoClose = false,
         drawerFoldersFirst = false,
@@ -89,6 +94,8 @@ class BackupRoundTripTest {
         dockRememberPosition = true,
         dockPaddingH = 8,
         dockPaddingV = 4,
+        drawerPaddingH = 16,
+        drawerPaddingV = 10,
         searchWebProvider = WebProvider.DUCKDUCKGO,
         searchContacts = true,
         searchShortcuts = false,
@@ -151,6 +158,24 @@ class BackupRoundTripTest {
         labsBigGrid = true
     )
 
+    // A pinned app shortcut with its own Edit: hidden label and a picked
+    // icon ride along with its own picture.
+    private val editedShortcut = LauncherItem(
+        id = "pinned",
+        itemType = ItemType.SHORTCUT,
+        container = ContainerType.FOLDER,
+        folderId = "folder",
+        label = "Call Mum",
+        packageName = "com.d",
+        className = "com.d.Main",
+        shortcutId = "contact-7",
+        iconBase64 = "BBBB",
+        shortcutEdit = AppOverride(
+            hideLabel = true, iconShape = "CIRCLE", iconPackPackage = "com.pack", iconDrawableName = "phone",
+            iconVariant = "THEMED"
+        )
+    )
+
     private fun sampleModel() = LauncherModel(
         version = CURRENT_MODEL_VERSION,
         items = listOf(
@@ -208,7 +233,7 @@ class BackupRoundTripTest {
                 intentUri = "intent:#Intent;component=com.x/.Act;end",
                 iconBase64 = "AAAA"
             )
-        ),
+        ) + editedShortcut,
         pageCount = 3,
         defaultPage = 1
     )
@@ -247,6 +272,8 @@ class BackupRoundTripTest {
         assertEquals(LockMethod.ACCESSIBILITY, decoded.prefs.lockMethod)
         assertEquals(com.supernova.launcher.ui.AnimationSpeed.DEFAULT, decoded.prefs.animationSpeed)
         assertEquals(0, decoded.prefs.dockPaddingH)
+        assertEquals(0, decoded.prefs.drawerPaddingH)
+        assertEquals(0, decoded.prefs.drawerPaddingV)
     }
 
     @Test

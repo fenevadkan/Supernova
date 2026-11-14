@@ -20,10 +20,13 @@ import com.supernova.launcher.ui.FolderPreviewStyle
 import com.supernova.launcher.ui.LabelContext
 import com.supernova.launcher.ui.LabelStyler
 import com.supernova.launcher.ui.LauncherViewModel
+import com.supernova.launcher.ui.SearchBarButtons
+import com.supernova.launcher.ui.SearchBarChip
 import com.supernova.launcher.ui.SearchBarConfig
 import com.supernova.launcher.ui.SearchBarView
 import com.supernova.launcher.ui.dp
 import com.supernova.launcher.ui.settings.PreviewKind
+import com.supernova.launcher.ui.textSizeOf
 import com.supernova.launcher.ui.theme.StyleConfig
 import com.supernova.launcher.ui.theme.Styles
 import com.supernova.launcher.ui.theme.SurfaceId
@@ -36,6 +39,14 @@ class SettingsPreviewView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
 ) : FrameLayout(context, attrs) {
+
+    // One stop for a screen reader: "Preview", not every sample label in
+    // the fake home screen it draws.
+    init {
+        contentDescription = context.getString(com.supernova.launcher.R.string.a11y_preview)
+        isFocusable = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+    }
 
     private var kind: PreviewKind? = null
 
@@ -114,6 +125,10 @@ class SettingsPreviewView @JvmOverloads constructor(
             }
             PreviewKind.DOCK -> {
                 com.supernova.launcher.ui.theme.SurfaceShapes.setColor(surfaceBg, withAlpha(styleAlpha ?: prefs.dockBgOpacity))
+                // The radius bar ticks here too.
+                if (prefs.dockBgStyle == DockBgStyle.ROUNDED) {
+                    (surfaceBg as? GradientDrawable)?.cornerRadius = dp(prefs.dockBgRadius).toFloat()
+                }
                 slotViews.forEachIndexed { index, slot ->
                     slot.visibility = if (index < prefs.dockCount) VISIBLE else GONE
                 }
@@ -278,20 +293,13 @@ class SettingsPreviewView @JvmOverloads constructor(
             setTextColor((DRAWER_HINT_ALPHA shl 24) or (surface.text and 0xFFFFFF))
         }, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         // The drawer's action buttons, inside the field as the drawer has them.
-        val buttons = com.supernova.launcher.ui.DrawerActionButton.decode(prefs.drawerActionButtons)
+        val buttons = SearchBarButtons.decode(prefs.drawerActionButtons)
         buttons.forEach { button ->
-            field.addView(ImageView(context).apply {
-                setImageResource(
-                    when (button) {
-                        com.supernova.launcher.ui.DrawerActionButton.PLAY_STORE -> R.drawable.ic_play_store
-                        com.supernova.launcher.ui.DrawerActionButton.SETTINGS -> R.drawable.ic_tab_settings
-                    }
-                )
-                imageTintList = android.content.res.ColorStateList.valueOf(surface.text)
-                val pad = dp(DRAWER_BUTTON_PAD_DP)
-                setPadding(pad, pad, pad, pad)
-                importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-            }, LinearLayout.LayoutParams(dp(DRAWER_BUTTON_DP), dp(DRAWER_BUTTON_DP)))
+            val width = if (button == SearchBarChip.DATE) LayoutParams.WRAP_CONTENT else dp(DRAWER_BUTTON_DP)
+            field.addView(
+                SearchBarButtons.view(context, button, surface.text, onClick = null),
+                LinearLayout.LayoutParams(width, dp(DRAWER_BUTTON_DP))
+            )
         }
         if (buttons.isNotEmpty()) field.setPaddingRelative(dp(SEARCH_BAR_INSET_DP), 0, dp(DRAWER_BUTTON_END_DP), 0)
         drawerField = field
@@ -410,11 +418,13 @@ class SettingsPreviewView @JvmOverloads constructor(
         styleAlpha = StyleConfig.decode(prefs.styleConfig).styleFor(SurfaceId.DOCK).alpha
 
         val strip = newRow()
-        strip.setPadding(dp(10), dp(8), dp(10), dp(8))
+        // The dock's own room above and below the icons when it has a
+        // background (LauncherActivity's DOCK_BG_PADDING_V_DP).
+        val padV = if (prefs.dockBgStyle == DockBgStyle.NONE) dp(DOCK_PAD_V_DP) else dp(DOCK_BG_PAD_V_DP)
+        strip.setPadding(dp(10), padV, dp(10), padV)
         when (prefs.dockBgStyle) {
             DockBgStyle.NONE -> Unit
-            DockBgStyle.PILL -> strip.background = surfaceDrawable(resolved, dp(30).toFloat())
-            DockBgStyle.ROUNDED -> strip.background = surfaceDrawable(resolved, dp(14).toFloat())
+            DockBgStyle.ROUNDED -> strip.background = surfaceDrawable(resolved, dp(prefs.dockBgRadius).toFloat())
             DockBgStyle.SQUARE -> strip.background = surfaceDrawable(resolved, 0f)
         }
         // Every slot the dock can have, Big grid's included; binding shows
@@ -752,11 +762,10 @@ class SettingsPreviewView @JvmOverloads constructor(
             imageTintList = android.content.res.ColorStateList.valueOf(resolved.text)
         }
         row.addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(10) })
-        val text = TextView(context).apply {
+        val text = com.supernova.launcher.ui.FadingTextView(context).apply {
             this.text = label
             setTextColor(resolved.text)
             maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
         }
         row.addView(text)
         return row
@@ -776,7 +785,7 @@ class SettingsPreviewView @JvmOverloads constructor(
         val pill = TextView(context)
         pill.text = context.getString(R.string.search_apps)
         pill.setTextColor((0x99 shl 24) or (resolved.text and 0xFFFFFF))
-        pill.textSize = 13f
+        pill.textSizeOf(R.dimen.text_secondary)
         pill.setPadding(dp(14), dp(7), dp(14), dp(7))
         pill.background = GradientDrawable().apply {
             cornerRadius = dp(18).toFloat()
@@ -844,11 +853,12 @@ class SettingsPreviewView @JvmOverloads constructor(
             image,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         )
-        val text = TextView(context)
+        val text = com.supernova.launcher.ui.FadingTextView(context)
         text.text = label
         text.maxLines = labelLines
-        text.ellipsize = android.text.TextUtils.TruncateAt.END
         text.gravity = Gravity.CENTER_HORIZONTAL
+        // The real labels' sides (item_icon.xml, item_drawer_app.xml).
+        text.setPadding(dp(2), 0, dp(2), 0)
         labelViews += text
         column.addView(
             text,
@@ -906,6 +916,8 @@ class SettingsPreviewView @JvmOverloads constructor(
 
     private companion object {
         // The home bar's height and side inset, with room above and below.
+        const val DOCK_PAD_V_DP = 8
+        const val DOCK_BG_PAD_V_DP = 16
         const val SEARCH_BAR_HEIGHT_DP = 48
         const val SEARCH_BAR_INSET_DP = 16
         const val SEARCH_BAR_PAD_DP = 28
@@ -916,7 +928,6 @@ class SettingsPreviewView @JvmOverloads constructor(
         const val DRAWER_HINT_ALPHA = 0x8A
         const val DRAWER_STROKE_ALPHA = 0x5A
         const val DRAWER_BUTTON_DP = 36
-        const val DRAWER_BUTTON_PAD_DP = 8
         const val DRAWER_BUTTON_END_DP = 4
         // The stand-in notification picture a Dynamic badge shows here, and
         // the count a Numeric one does.

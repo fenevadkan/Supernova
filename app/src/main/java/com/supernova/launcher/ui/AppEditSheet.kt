@@ -3,11 +3,13 @@ package com.supernova.launcher.ui
 import android.content.Context
 import android.view.LayoutInflater
 import android.widget.Toast
+import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.supernova.launcher.R
 import com.supernova.launcher.data.AppIconSource
 import com.supernova.launcher.data.AppOverride
 import com.supernova.launcher.data.GalleryIconCodec
+import com.supernova.launcher.data.IconSearch
 import com.supernova.launcher.data.IconShape
 import com.supernova.launcher.data.LaunchableApp
 import com.supernova.launcher.databinding.SheetAppEditBinding
@@ -23,18 +25,23 @@ import kotlinx.coroutines.withContext
 // identity.
 object AppEditSheet {
 
-    // A placed item that isn't an app icon - a pinned shortcut, a launcher
-    // action, a picked activity - edits its own label. The app-level rows
-    // (hide label, shape, icon, photo, reset) are the app's and go; a
-    // shortcut used to open its app's sheet, so renaming it renamed the app
-    // everywhere, and an item with no app opened nothing at all.
-    class ItemLabel(val label: String, val onSave: (String) -> Unit)
+    // A placed shortcut - a pinned app shortcut, a picked activity - edits
+    // its own name, hidden label, icon, shape and style, saved on the item
+    // rather than the app: a shortcut used to open its app's sheet, so
+    // renaming it renamed the app everywhere. `originalLabel` is the name
+    // Reset puts back, when it is known.
+    class ShortcutEdit(
+        val label: String,
+        val edit: AppOverride,
+        val originalLabel: String?,
+        val onSave: (label: String, edit: AppOverride) -> Unit
+    )
 
     fun show(
         context: Context,
         scope: CoroutineScope,
         viewModel: LauncherViewModel,
-        // Null only with itemLabel, for an item with no app behind it.
+        // Null only with shortcut, for one with no app behind it.
         app: LaunchableApp?,
         // Host-provided photo picker (the ActivityResult launcher must be
         // registered on the activity); null hides the photo options.
@@ -46,15 +53,15 @@ object AppEditSheet {
         // async model write.
         swipeLabels: ((down: Boolean) -> String?)? = null,
         onEditSwipe: ((down: Boolean, onPicked: (String?) -> Unit) -> Unit)? = null,
-        itemLabel: ItemLabel? = null
+        shortcut: ShortcutEdit? = null
     ) {
-        if (app == null && itemLabel == null) return
+        if (app == null && shortcut == null) return
         val binding = SheetAppEditBinding.inflate(LayoutInflater.from(context))
         val dialog = com.supernova.launcher.ui.Sheets.open(context)
         dialog.setContentView(binding.root)
 
-        val rawLabel = itemLabel?.label ?: app?.let(viewModel::rawLabelOf).orEmpty()
-        val current = if (itemLabel == null && app != null) viewModel.overrideFor(app) else AppOverride()
+        val rawLabel = shortcut?.label ?: app?.let(viewModel::rawLabelOf).orEmpty()
+        val current = shortcut?.edit ?: app?.let(viewModel::overrideFor) ?: AppOverride()
         var chosenShape: String? = current.iconShape
         var chosenPack: String? = current.iconPackPackage
         var chosenIcon: String? = current.iconDrawableName
@@ -62,12 +69,14 @@ object AppEditSheet {
         var chosenVariant: String? = current.iconVariant
 
         binding.editTitle.text = rawLabel
-        if (viewModel.state.value.prefs.labsShowComponent && app != null) {
+        if (viewModel.state.value.prefs.labsShowComponent && app != null && shortcut == null) {
             binding.editComponent.text = "${app.packageName}/${app.className}"
             binding.editComponent.visibility = android.view.View.VISIBLE
         }
         binding.editLabel.setText(current.customLabel ?: rawLabel)
         binding.hideLabelSwitch.isChecked = current.hideLabel
+        // The whole row toggles it, as the sheet's other switch rows do.
+        binding.hideLabelRow.setOnClickListener { binding.hideLabelSwitch.toggle() }
 
         fun refreshRows() {
             val shapeLabel = chosenShape?.let { context.getString(EnumLabels.of(IconShape.fromName(it))) }
@@ -195,14 +204,23 @@ object AppEditSheet {
             }
         }
 
-        if (itemLabel != null) {
-            listOf(
-                binding.hideLabelRow, binding.shapeRow, binding.variantRow,
-                binding.iconRow, binding.resetButton
-            ).forEach { it.visibility = android.view.View.GONE }
+        if (shortcut != null) {
+            binding.resetButton.setOnClickListener {
+                shortcut.onSave(shortcut.originalLabel ?: shortcut.label, AppOverride())
+                dialog.dismiss()
+            }
             binding.saveButton.setOnClickListener {
-                val typed = binding.editLabel.text?.toString().orEmpty().trim()
-                if (typed.isNotEmpty() && typed != itemLabel.label) itemLabel.onSave(typed)
+                shortcut.onSave(
+                    binding.editLabel.text?.toString().orEmpty(),
+                    AppOverride(
+                        hideLabel = binding.hideLabelSwitch.isChecked,
+                        iconShape = chosenShape,
+                        iconPackPackage = if (chosenIcon != null) chosenPack else null,
+                        iconDrawableName = chosenIcon,
+                        iconBase64 = chosenPhoto,
+                        iconVariant = chosenVariant
+                    )
+                )
                 dialog.dismiss()
             }
             dialog.show()
@@ -336,10 +354,18 @@ object IconPickerSheet {
         val dialog = com.supernova.launcher.ui.Sheets.open(context)
         dialog.setContentView(binding.root)
         binding.iconGrid.layoutManager = androidx.recyclerview.widget.GridLayoutManager(context, GRID_COLUMNS)
-        binding.iconGrid.adapter = IconChoiceAdapter(viewModel, grid) { name ->
+        val adapter = IconChoiceAdapter(viewModel, grid) { name ->
             onPick(grid.packPackage, name)
             dialog.dismiss()
         }
+        binding.iconGrid.adapter = adapter
+        // Filters as you type; a scan of names only, so a pack of
+        // thousands keeps up. The sheet sits above the keyboard.
+        binding.iconSearch.doAfterTextChanged { text ->
+            adapter.show(IconSearch.filter(grid.names, grid.labels, text?.toString().orEmpty()))
+            binding.iconGrid.scrollToPosition(0)
+        }
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         dialog.show()
     }
 
@@ -360,14 +386,24 @@ object IconPickerSheet {
             return Holder(view)
         }
 
-        override fun getItemCount(): Int = grid.names.size
+        // Grid indices on show: all of them, or a search's matches.
+        private var shown: List<Int> = grid.names.indices.toList()
+
+        @android.annotation.SuppressLint("NotifyDataSetChanged")
+        fun show(indices: List<Int>) {
+            shown = indices
+            notifyDataSetChanged()
+        }
+
+        override fun getItemCount(): Int = shown.size
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
-            val name = grid.names[position]
+            val index = shown[position]
+            val name = grid.names[index]
             // Lazy per-bind decode: the RecyclerView only materializes what
             // scrolls into view, so a 3,000-icon pack stays tractable.
             holder.view.setImageDrawable(viewModel.appCatalog().packDrawable(grid.packPackage, name))
-            grid.labels?.getOrNull(position)?.let { label ->
+            grid.labels?.getOrNull(index)?.let { label ->
                 holder.view.contentDescription = label
                 holder.view.tooltipText = label
             }

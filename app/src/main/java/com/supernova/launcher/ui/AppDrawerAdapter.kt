@@ -1,5 +1,6 @@
 package com.supernova.launcher.ui
 
+import androidx.core.content.withStyledAttributes
 import android.graphics.drawable.Drawable
 import android.view.LayoutInflater
 import android.view.View
@@ -11,6 +12,7 @@ import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.LaunchableApp
 import com.supernova.launcher.databinding.ItemDrawerAppBinding
 import com.supernova.launcher.databinding.ItemDrawerAppRowBinding
+import kotlin.math.roundToInt
 
 class AppDrawerAdapter(
     private val appCatalog: AppCatalog,
@@ -104,30 +106,84 @@ class AppDrawerAdapter(
     // A grid row's height when the drawer's Rows share out its height (the
     // vertical grid with Rows set); 0 = the tile's own height.
     var tileHeightPx: Int = 0
-    // The tile's own height (naturalTileHeightPx): a row shorter than it
-    // takes the difference out of the tile's padding.
-    var tileNaturalPx: Int = 0
+    // What a tile holds without its padding (measureTile): icon, gap and
+    // label as the labels wrap, and with the label on one line. A row
+    // shorter than that fits the tile into it (DrawerTileFit); 0 = not
+    // measured.
+    var tileContentPx: Int = 0
+    var tileCompactPx: Int = 0
 
-    // A tile's own height at the current icon size and label style, taken
-    // from the app whose label runs longest, the likeliest to wrap; 0 with
-    // no apps or no column width yet.
-    fun naturalTileHeightPx(parent: ViewGroup): Int {
-        val longest = allEntries.maxByOrNull { it.app.label.length }
+    // A tile's content height at the current icon size and label style
+    // (tileContentPx, then tileCompactPx), taken from the app whose label
+    // runs longest, the likeliest to wrap; null with no apps or no column
+    // width yet. Measured without the tile's padding and its minimum
+    // height: a tile whose icon the column's width shrank is shorter than
+    // that minimum, and a row only has to hold what the tile draws.
+    fun measureTile(parent: ViewGroup): IntArray? {
+        val longest = allEntries.filterNot { it.app.hideLabel }.maxByOrNull { it.app.label.length }
+            ?: allEntries.firstOrNull()
         val width = tileWidthPx
-        if (longest == null || width <= 0) return 0
-        val holder = TileHolder(ItemDrawerAppBinding.inflate(LayoutInflater.from(parent.context), parent, false))
+        if (longest == null || width <= 0) return null
+        val binding = ItemDrawerAppBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        val holder = TileHolder(binding)
         val fixed = tileHeightPx
         tileHeightPx = 0
         holder.bind(longest.app)
         tileHeightPx = fixed
-        holder.itemView.measure(
-            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        )
-        return holder.itemView.measuredHeight
+        val root = binding.root
+        root.minimumHeight = 0
+        root.setPadding(root.paddingLeft, 0, root.paddingRight, 0)
+        fun measured(): Int {
+            root.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            return root.measuredHeight
+        }
+        val content = measured()
+        binding.appLabel.maxLines = 1
+        return intArrayOf(content, measured())
     }
 
-    fun setDisplay(iconScale: Float, showLabels: Boolean, prefs: com.supernova.launcher.data.LauncherPrefs? = null) {
+    // How a grid tile with an `iconPx` icon box sits in its row now.
+    private fun tileFit(density: Float, iconPx: Int): DrawerTileFit = DrawerTileFit.of(
+        tileHeightPx,
+        (TILE_PADDING_V_DP * density).toInt(),
+        tileContentPx,
+        tileCompactPx,
+        iconPx
+    )
+
+    // A grid tile as the drawer draws it, for the search window's tiles,
+    // which line up with the drawer's grid: the row, the icon box the
+    // column leaves it and the fit. Null before the drawer has measured a
+    // tile, or while its rows are the tiles' own height.
+    class TileLook(val rowPx: Int, val iconPx: Int, val fit: DrawerTileFit)
+
+    fun tileLook(context: android.content.Context): TileLook? {
+        if (tileHeightPx <= 0 || tileContentPx <= 0) return null
+        val density = context.resources.displayMetrics.density
+        val side = (TILE_PADDING_H_DP * density).toInt()
+        val box = iconBoxPx((TILE_ICON_DP * density).roundToInt(), side, side, keepInsideTile = true)
+        return TileLook(tileHeightPx, box, tileFit(density, box))
+    }
+
+    // A grid's spare tiles: RecyclerView keeps five of a kind by default, and
+    // a fling through a grid of `columns` brings a whole row of them in at
+    // once, so every row past the fifth tile inflated new ones mid-fling.
+    // Enough here for a few rows.
+    fun sizePool(pool: RecyclerView.RecycledViewPool, columns: Int) {
+        val spare = (columns * POOL_ROWS).coerceAtLeast(DEFAULT_POOL)
+        pool.setMaxRecycledViews(TYPE_TILE, spare)
+        pool.setMaxRecycledViews(TYPE_FOLDER_TILE, columns.coerceAtLeast(DEFAULT_POOL))
+    }
+
+    // True when something a tile draws changed.
+    fun setDisplay(
+        iconScale: Float,
+        showLabels: Boolean,
+        prefs: com.supernova.launcher.data.LauncherPrefs? = null
+    ): Boolean {
         val labelStyleChanged = prefs != null && (
             labelPrefs?.labelSize != prefs.labelSize ||
                 labelPrefs?.labelColor != prefs.labelColor ||
@@ -161,12 +217,13 @@ class AppDrawerAdapter(
         if (this.iconScale == iconScale && this.showLabels == showLabels &&
             !labelStyleChanged && !badgeStyleChanged
         ) {
-            return
+            return false
         }
         this.iconScale = iconScale
         this.showLabels = showLabels
         if (prefs != null) labelPrefs = prefs
         if (displayItems.isNotEmpty()) notifyDataSetChanged()
+        return true
     }
 
     fun submit(
@@ -287,20 +344,47 @@ class AppDrawerAdapter(
         else -> ""
     }
 
-    private fun showWebRow(): Boolean =
-        query.isNotBlank() && displayItems.isEmpty() && SearchMarks.hasProviders(labelPrefs)
+    private fun showWebRow(): Boolean = query.isNotBlank() && displayItems.isEmpty()
 
-    // Empty state: "Search with" header + the provider marks, the same answer
-    // the global overlay gives.
-    override fun getItemCount(): Int = if (showWebRow()) 2 else displayItems.size
+    // Nothing matched: the rows the search window ends every query with. A
+    // web engine other than Google (the only one with a mark) keeps its own
+    // row above the "Search with" header and the provider marks; with every
+    // provider off the engine row stands alone.
+    private fun footerTypes(): List<Int> {
+        val prefs = labelPrefs
+        val marks = SearchMarks.hasProviders(prefs)
+        val engine = prefs?.searchWebProvider ?: com.supernova.launcher.search.WebProvider.GOOGLE
+        return buildList {
+            if (!marks || engine != com.supernova.launcher.search.WebProvider.GOOGLE) add(TYPE_WEB_ROW)
+            if (marks) {
+                add(TYPE_MARKS_HEADER)
+                add(TYPE_WEB)
+            }
+        }
+    }
+
+    // A tab with nothing in it: what to say, and the way to fill it. Null
+    // leaves an empty list empty (the All tab, a search).
+    class EmptyState(val message: CharSequence, val actionLabel: CharSequence, val onAction: () -> Unit)
+
+    var emptyState: EmptyState? = null
+
+    private fun showEmpty(): Boolean = query.isBlank() && displayItems.isEmpty() && emptyState != null
+
+    override fun getItemCount(): Int = when {
+        showWebRow() -> footerTypes().size
+        showEmpty() -> 1
+        else -> displayItems.size
+    }
 
     // Both empty-state rows run the width of the grid; everything else is one
     // cell. The layout manager asks through this.
     fun spanSizeAt(position: Int, spanCount: Int): Int =
-        if (showWebRow() || displayItems.getOrNull(position) === HeaderItem) spanCount else 1
+        if (showWebRow() || showEmpty() || displayItems.getOrNull(position) === HeaderItem) spanCount else 1
 
     override fun getItemViewType(position: Int): Int = when {
-        showWebRow() -> if (position == 0) TYPE_MARKS_HEADER else TYPE_WEB
+        showWebRow() -> footerTypes()[position]
+        showEmpty() -> TYPE_EMPTY
         displayItems[position] === HeaderItem -> TYPE_LIST_HEADER
         displayItems[position] is FolderEntry ->
             if (displayMode == DisplayMode.ROW) TYPE_FOLDER_ROW else TYPE_FOLDER_TILE
@@ -328,6 +412,9 @@ class AppDrawerAdapter(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             })
+            TYPE_WEB_ROW -> WebRowHolder(
+                com.supernova.launcher.databinding.ItemSearchRowBinding.inflate(inflater, parent, false)
+            )
             TYPE_LIST_HEADER -> ListHeaderHolder(
                 android.widget.FrameLayout(parent.context).apply {
                     layoutParams = RecyclerView.LayoutParams(
@@ -335,6 +422,7 @@ class AppDrawerAdapter(
                     )
                 }
             )
+            TYPE_EMPTY -> EmptyHolder(parent.context)
             TYPE_FOLDER_TILE -> FolderTileHolder(ItemDrawerAppBinding.inflate(inflater, parent, false))
             TYPE_FOLDER_ROW -> FolderRowHolder(ItemDrawerAppRowBinding.inflate(inflater, parent, false))
             else -> TileHolder(ItemDrawerAppBinding.inflate(inflater, parent, false))
@@ -348,8 +436,10 @@ class AppDrawerAdapter(
             is FolderTileHolder -> holder.bind(displayItems[position] as FolderEntry)
             is FolderRowHolder -> holder.bind(displayItems[position] as FolderEntry)
             is MarksHolder -> holder.bind()
+            is WebRowHolder -> holder.bind()
             is HeaderHolder -> Unit
             is ListHeaderHolder -> holder.bind(headerView)
+            is EmptyHolder -> emptyState?.let(holder::bind)
         }
     }
 
@@ -362,14 +452,18 @@ class AppDrawerAdapter(
     // a grid set denser than its icons fit shrinks them instead of clipping
     // them. basePx is the box the layout declares.
     private fun sizeIcon(root: View, icon: View, basePx: Int, keepInsideTile: Boolean) {
-        var box = (basePx * iconScale).toInt()
-        val room = tileWidthPx - root.paddingLeft - root.paddingRight
-        if (keepInsideTile && tileWidthPx > 0 && room > 0) box = box.coerceAtMost(room)
+        val box = iconBoxPx(basePx, root.paddingLeft, root.paddingRight, keepInsideTile)
         val params = icon.layoutParams
         if (params.width == box && params.height == box) return
         params.width = box
         params.height = box
         icon.layoutParams = params
+    }
+
+    private fun iconBoxPx(basePx: Int, paddingLeft: Int, paddingRight: Int, keepInsideTile: Boolean): Int {
+        val box = (basePx * iconScale).toInt()
+        val room = tileWidthPx - paddingLeft - paddingRight
+        return if (keepInsideTile && tileWidthPx > 0 && room > 0) box.coerceAtMost(room) else box
     }
 
     private fun applyTileWidth(root: View) {
@@ -383,18 +477,12 @@ class AppDrawerAdapter(
     }
 
     // A row taller than its tile keeps the icon and label in its middle; a
-    // shorter one trims the tile's padding, never the label.
-    private fun applyTileHeight(root: View) {
-        val height = if (tileHeightPx > 0) tileHeightPx else ViewGroup.LayoutParams.WRAP_CONTENT
-        if (root.layoutParams.height != height) root.layoutParams = root.layoutParams.apply { this.height = height }
-        (root as? android.widget.LinearLayout)?.gravity =
-            if (tileHeightPx > 0) android.view.Gravity.CENTER else android.view.Gravity.CENTER_HORIZONTAL
-        val pad = (TILE_PADDING_V_DP * root.resources.displayMetrics.density).toInt()
-        val squeeze = if (tileHeightPx in 1 until tileNaturalPx) (tileNaturalPx - tileHeightPx + 1) / 2 else 0
-        val padV = (pad - squeeze).coerceAtLeast(0)
-        if (root.paddingTop != padV || root.paddingBottom != padV) {
-            root.setPadding(root.paddingLeft, padV, root.paddingRight, padV)
-        }
+    // shorter one fits the tile into it (DrawerTileFit). Runs after the
+    // label is styled.
+    private fun applyTileFit(tile: ItemDrawerAppBinding, baseIconPx: Int) {
+        val root = tile.root
+        val box = iconBoxPx(baseIconPx, root.paddingLeft, root.paddingRight, keepInsideTile = true)
+        DrawerTileFit.apply(tile, tileHeightPx, box, tileFit(root.resources.displayMetrics.density, box))
     }
 
     // Hosts the drawer's header view; there is one such view, so a rebind
@@ -414,13 +502,12 @@ class AppDrawerAdapter(
 
         fun bind(app: LaunchableApp) {
             applyTileWidth(binding.root)
-            applyTileHeight(binding.root)
             binding.appLabel.text = app.label
             labelPrefs?.let { LabelStyler.apply(binding.appLabel, it, onWallpaper = false, context = LabelContext.DRAWER) }
             binding.appLabel.visibility = if (showLabels && !app.hideLabel) View.VISIBLE else View.GONE
             binding.root.contentDescription = app.label
             binding.appIcon.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            sizeIcon(binding.root, binding.appIcon, baseIconPx, keepInsideTile = true)
+            applyTileFit(binding, baseIconPx)
             binding.appIcon.setImageDrawable(decorateIcon(appCatalog.iconFor(app), app))
             binding.root.setOnClickListener { onClick(it, app) }
             binding.root.setOnLongClickListener {
@@ -452,7 +539,6 @@ class AppDrawerAdapter(
 
         fun bind(folder: FolderEntry) {
             applyTileWidth(binding.root)
-            applyTileHeight(binding.root)
             binding.appLabel.text = folder.group.name
             labelPrefs?.let { LabelStyler.apply(binding.appLabel, it, onWallpaper = false, context = LabelContext.DRAWER) }
             binding.appLabel.visibility = if (showLabels) View.VISIBLE else View.GONE
@@ -460,7 +546,7 @@ class AppDrawerAdapter(
             binding.root.contentDescription =
                 binding.root.context.getString(R.string.folder_desc, folder.group.name)
             binding.appIcon.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            sizeIcon(binding.root, binding.appIcon, baseIconPx, keepInsideTile = true)
+            applyTileFit(binding, baseIconPx)
             binding.appIcon.setImageDrawable(decorateFolderIcon(folder.icon, folder))
             binding.root.setOnClickListener { onFolderClick(it, folder) }
             binding.root.setOnLongClickListener {
@@ -489,6 +575,64 @@ class AppDrawerAdapter(
 
     class HeaderHolder(view: View) : RecyclerView.ViewHolder(view)
 
+    // The empty tab's line and its button, centred in the list.
+    class EmptyHolder(context: android.content.Context) : RecyclerView.ViewHolder(
+        android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            val pad = (EMPTY_PAD_DP * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            addView(android.widget.TextView(context).apply {
+                setTextColor(context.getColor(R.color.textSecondary))
+                gravity = android.view.Gravity.CENTER
+            })
+            // A text button in the accent, as dialogs' are.
+            addView(android.widget.TextView(context).apply {
+                setTextColor(context.getColor(R.color.accent))
+                textSize = EMPTY_BUTTON_SP
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                gravity = android.view.Gravity.CENTER
+                minHeight = (EMPTY_BUTTON_MIN_DP * resources.displayMetrics.density).toInt()
+                val side = (EMPTY_BUTTON_PAD_DP * resources.displayMetrics.density).toInt()
+                setPadding(side, 0, side, 0)
+                context.withStyledAttributes(attrs = intArrayOf(android.R.attr.selectableItemBackground)) {
+                    background = getDrawable(0)
+                }
+                isClickable = true
+            })
+        }
+    ) {
+        fun bind(state: EmptyState) {
+            val box = itemView as android.widget.LinearLayout
+            (box.getChildAt(0) as android.widget.TextView).text = state.message
+            (box.getChildAt(1) as android.widget.TextView).apply {
+                text = state.actionLabel
+                setOnClickListener { state.onAction() }
+            }
+        }
+    }
+
+    // "Search <engine> for “query”", as the search window words it.
+    inner class WebRowHolder(
+        private val binding: com.supernova.launcher.databinding.ItemSearchRowBinding
+    ) : RecyclerView.ViewHolder(binding.root) {
+        fun bind() {
+            val context = binding.root.context
+            val engine = labelPrefs?.searchWebProvider ?: com.supernova.launcher.search.WebProvider.GOOGLE
+            val color = context.getColor(R.color.textPrimary)
+            binding.resultIcon.setImageResource(R.drawable.ic_search)
+            androidx.core.widget.ImageViewCompat.setImageTintList(
+                binding.resultIcon, android.content.res.ColorStateList.valueOf(color)
+            )
+            binding.resultLabel.text = context.getString(R.string.search_web_for, engine.displayName, query.trim())
+            binding.resultLabel.setTextColor(color)
+            binding.root.setOnClickListener { onWebSearch() }
+        }
+    }
+
     inner class MarksHolder(
         private val view: FrequentAppsRowView
     ) : RecyclerView.ViewHolder(view) {
@@ -513,8 +657,11 @@ class AppDrawerAdapter(
     } ?: 0
 
     companion object {
-        // item_drawer_app's paddingVertical.
+        // item_drawer_app's paddingVertical and paddingHorizontal.
         const val TILE_PADDING_V_DP = 12
+        const val TILE_PADDING_H_DP = 4
+        // item_drawer_app's icon box.
+        const val TILE_ICON_DP = 48
         private const val TYPE_TILE = 0
         private const val TYPE_ROW = 1
         private const val TYPE_WEB = 2
@@ -522,7 +669,16 @@ class AppDrawerAdapter(
         private const val TYPE_FOLDER_ROW = 4
         private const val TYPE_MARKS_HEADER = 5
         private const val TYPE_LIST_HEADER = 6
+        private const val TYPE_EMPTY = 7
+        private const val TYPE_WEB_ROW = 8
+        private const val EMPTY_PAD_DP = 32
+        private const val EMPTY_BUTTON_SP = 16f
+        private const val EMPTY_BUTTON_MIN_DP = 48
+        private const val EMPTY_BUTTON_PAD_DP = 16
         private const val HEADER_KEY = "list-header"
+        // Rows of spare tiles a grid keeps, and RecyclerView's own count.
+        private const val POOL_ROWS = 3
+        private const val DEFAULT_POOL = 5
         private const val WEB_ROW_ID = -2L
 
         // Folders merged in among the apps by name, in the list's direction

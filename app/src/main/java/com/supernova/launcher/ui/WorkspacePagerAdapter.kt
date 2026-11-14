@@ -343,6 +343,9 @@ class WorkspacePagerAdapter(private val host: Host) : RecyclerView.Adapter<Recyc
             "${prefs.folderIconShape},${prefs.folderIconOutline},${prefs.folderClipToBg}," +
             "${prefs.folderMatchWindowColor},${prefs.folderPlateColor}," +
             "${prefs.folderPrioritizeFirst},${prefs.folderBgColor}," +
+            // The window's order and columns pick the preview's members.
+            "${prefs.folderSortAz},${prefs.folderColumns},${prefs.folderMode}," +
+            "${prefs.folderIconScale},${prefs.folderMatchDesktop}," +
             "${prefs.styleConfig}|" +
             "${prefs.badgeTextColor},${prefs.badgeCornerRadius},${prefs.badgeOutline}|" +
             // The rest of the badge settings belong here too. They were
@@ -359,7 +362,10 @@ class WorkspacePagerAdapter(private val host: Host) : RecyclerView.Adapter<Recyc
         state.model.items
             .filter { it.container == ContainerType.FOLDER && it.folderId == folderId }
             .sortedBy { it.rank }
-            .joinToString(",", prefix = "[", postfix = "]") { "${it.id}:${it.packageName}/${it.className}" }
+            .joinToString(",", prefix = "[", postfix = "]") {
+                // A shortcut member's Edit changes its tile in the preview.
+                "${it.id}:${it.packageName}/${it.className}/${it.shortcutEdit?.hashCode()}"
+            }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
         val inflater = LayoutInflater.from(parent.context)

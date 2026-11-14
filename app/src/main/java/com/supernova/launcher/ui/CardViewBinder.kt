@@ -5,7 +5,6 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -123,13 +122,12 @@ class CardViewBinder(private val callbacks: Callbacks) {
                     }
                     val size = context.dp(56)
                     tile.addView(icon, LinearLayout.LayoutParams(size, size))
-                    val label = TextView(context).apply {
+                    val label = FadingTextView(context).apply {
                         text = featuredLabel
                             ?: com.supernova.launcher.data.LaunchTarget.split(target).first.substringBefore('/')
                         setTextColor(textColor)
-                        textSize = 22f
+                        textSizeOf(R.dimen.text_headline)
                         maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
                         setPadding(context.dp(18), 0, 0, 0)
                     }
                     tile.addView(
@@ -154,7 +152,7 @@ class CardViewBinder(private val callbacks: Callbacks) {
                         TextView(context).apply {
                             setText(R.string.card_widget_unavailable)
                             setTextColor((0xB3 shl 24) or (textColor and 0xFFFFFF))
-                            textSize = 15f
+                            textSizeOf(R.dimen.text_body)
                             setPadding(0, context.dp(14), 0, context.dp(14))
                         },
                         FrameLayout.LayoutParams(
@@ -239,12 +237,11 @@ class CardViewBinder(private val callbacks: Callbacks) {
                 })
             }
             pill.addView(
-                TextView(context).apply {
+                FadingTextView(context).apply {
                     text = label
                     setTextColor(textColor)
                     textSize = 14f
                     maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
                 },
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT

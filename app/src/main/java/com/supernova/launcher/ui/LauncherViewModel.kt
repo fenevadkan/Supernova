@@ -18,7 +18,10 @@ import com.supernova.launcher.data.CustomIcons
 import com.supernova.launcher.data.CustomShapeSpec
 import com.supernova.launcher.data.DeviceProfile
 import com.supernova.launcher.data.DrawerGroup
+import com.supernova.launcher.data.DrawerGroupEdit
+import com.supernova.launcher.data.DrawerGroupOrder
 import com.supernova.launcher.data.DrawerGroupType
+import com.supernova.launcher.data.GroupPick
 import com.supernova.launcher.data.IconPack
 import com.supernova.launcher.data.IconShape
 import com.supernova.launcher.data.ItemType
@@ -31,7 +34,11 @@ import com.supernova.launcher.data.LauncherRepository
 import com.supernova.launcher.data.Pref
 import com.supernova.launcher.data.PrefSpec
 import com.supernova.launcher.data.PrivateSpace
+import com.supernova.launcher.data.TabFolders
 import com.supernova.launcher.data.WorkspaceGeometry
+import com.supernova.launcher.data.imports.BackupFiles
+import com.supernova.launcher.data.imports.LayoutConverter
+import com.supernova.launcher.data.imports.PickedBackup
 import com.supernova.launcher.gesture.Gesture
 import com.supernova.launcher.gesture.GestureBinding
 import com.supernova.launcher.gesture.GestureDefaults
@@ -73,6 +80,7 @@ class LauncherViewModel(
 
     private val appsFlow = MutableStateFlow(emptyList<LaunchableApp>())
     private val privateSpaceFlow = MutableStateFlow<PrivateSpace?>(null)
+    private val pausedWorkFlow = MutableStateFlow(emptySet<Long>())
     private val currentPageFlow = MutableStateFlow(0)
     // Launch counts for most-used sort; device-local, collected eagerly.
     private var launchCounts: Map<String, Int> = emptyMap()
@@ -106,15 +114,16 @@ class LauncherViewModel(
     val state = combine(
         repository.modelFlow,
         preferences.flow,
-        combine(appsFlow, privateSpaceFlow, ::Pair),
+        combine(appsFlow, privateSpaceFlow, pausedWorkFlow, ::Triple),
         currentPageFlow,
         iconGeneration
-    ) { model, prefs, (apps, privateSpace), page, generation ->
+    ) { model, prefs, (apps, privateSpace, pausedWork), page, generation ->
         LauncherUiState(
             model = model,
             prefs = prefs,
             apps = apps,
             privateSpace = privateSpace,
+            pausedWorkProfiles = pausedWork,
             currentPage = page,
             iconGeneration = generation,
             loaded = true,
@@ -133,6 +142,21 @@ class LauncherViewModel(
     // Any one setting: viewModel.set(Pref.gridRows, 7). The settings that
     // need more than their own key written keep a function of their own.
     fun <T : Any> set(spec: PrefSpec<T>, value: T) = persist { preferences.set(spec, value) }
+
+    // Several settings in one write (the first run's looks). With replant,
+    // the planted first-run layout is built again for the grid they set.
+    fun setAll(writes: List<com.supernova.launcher.data.PrefWrite<*>>, replant: Boolean = false) = persist {
+        preferences.setAll(writes)
+        if (replant) {
+            val prefs = preferences.snapshot()
+            val items = withContext(Dispatchers.Default) {
+                DefaultLayoutBuilder.buildItems(
+                    getApplication(), catalog, prefs.gridCols, prefs.gridRows, prefs.dockCount
+                )
+            }
+            repository.replantDefaultLayout(items)
+        }
+    }
 
     private var appliedIconPack: String? = null
     private var appliedIconShape: IconShape? = null
@@ -376,8 +400,25 @@ class LauncherViewModel(
         // icon. The first-frame icons are cache hits here.
         val apps = catalog.listLaunchableApps()
         privateSpaceFlow.value = catalog.privateSpace()
+        pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        pruneUninstalled(apps)
         catalog.warmIcons(apps)
+    }
+
+    // Catching up on uninstalls the launcher missed (its process was gone
+    // when the app went): an item whose app is no longer installed goes, as
+    // it does on onPackageRemoved. Only apps the scan didn't list are asked
+    // about, and isUninstalled keeps anything that may come back.
+    private suspend fun pruneUninstalled(apps: List<LaunchableApp>) {
+        val listed = apps.mapTo(HashSet()) { "${it.userSerial}/${it.packageName}" }
+        repository.modelFlow.first().items.asSequence()
+            .filter { it.itemType == ItemType.APP || it.itemType == ItemType.SHORTCUT }
+            .mapNotNull { item -> item.packageName?.let { it to item.userSerial } }
+            .distinct()
+            .filter { (pkg, serial) -> "$serial/$pkg" !in listed && catalog.isUninstalled(pkg, serial) }
+            .toList()
+            .forEach { (pkg, serial) -> repository.removeItemsForPackage(pkg, serial) }
     }
 
     // Auto-add: a newly installed primary-profile app lands on the first page
@@ -392,26 +433,33 @@ class LauncherViewModel(
         }
     }
 
-    // The private space locking or unlocking, or coming or going: its apps
-    // show or vanish with it.
+    // The private space locking or unlocking, work apps pausing or turning
+    // back on, or either profile coming or going: their apps show or vanish
+    // with it.
     private val profileReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) = requestRefresh(immediate = true)
     }
 
     init {
-        // There is no private space before Android 15.
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            registerProfileReceiver()
-        }
+        registerProfileReceiver()
     }
 
-    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM)
     private fun registerProfileReceiver() {
         val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_PROFILE_AVAILABLE)
-            addAction(Intent.ACTION_PROFILE_UNAVAILABLE)
-            addAction(Intent.ACTION_PROFILE_ADDED)
-            addAction(Intent.ACTION_PROFILE_REMOVED)
+            // The work profile's own broadcasts: Android 15's profile ones
+            // below only come with private space support, which not every
+            // phone has. Both arriving coalesce into one rescan or two.
+            addAction(Intent.ACTION_MANAGED_PROFILE_AVAILABLE)
+            addAction(Intent.ACTION_MANAGED_PROFILE_UNAVAILABLE)
+            addAction(Intent.ACTION_MANAGED_PROFILE_ADDED)
+            addAction(Intent.ACTION_MANAGED_PROFILE_REMOVED)
+            // There is no private space before Android 15.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                addAction(Intent.ACTION_PROFILE_AVAILABLE)
+                addAction(Intent.ACTION_PROFILE_UNAVAILABLE)
+                addAction(Intent.ACTION_PROFILE_ADDED)
+                addAction(Intent.ACTION_PROFILE_REMOVED)
+            }
         }
         androidx.core.content.ContextCompat.registerReceiver(
             getApplication(), profileReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
@@ -427,6 +475,16 @@ class LauncherViewModel(
     }
 
     fun isPrivateSerial(userSerial: Long): Boolean = state.value.privateSpace?.userSerial == userSerial
+
+    // Work apps paused: the Work tab shows a card that turns them back on
+    // in their place.
+    fun workPaused(): Boolean = state.value.pausedWorkProfiles.isNotEmpty()
+
+    fun setWorkPaused(paused: Boolean) = viewModelScope.launch(Dispatchers.Default) {
+        catalog.setWorkPaused(paused)
+        // The broadcast follows; this covers a refused request too.
+        requestRefresh(immediate = true)
+    }
 
     override fun onCleared() {
         runCatching { getApplication<Application>().unregisterReceiver(profileReceiver) }
@@ -453,7 +511,9 @@ class LauncherViewModel(
         iconsStale = false
         val apps = catalog.listLaunchableApps()
         privateSpaceFlow.value = catalog.privateSpace()
+        pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        pruneUninstalled(apps)
         // Pre-warm off the main thread so binds become cache hits; the
         // render lock keeps this safe alongside main-thread misses.
         catalog.warmIcons(apps)
@@ -735,6 +795,9 @@ class LauncherViewModel(
 
     fun sortFolder(folderId: String) = persist { repository.sortFolder(folderId) }
 
+    fun reorderFolder(folderId: String, orderedIds: List<String>) =
+        persist { repository.reorderFolder(folderId, orderedIds) }
+
     fun addWidget(
         page: Int,
         cellX: Int,
@@ -774,10 +837,15 @@ class LauncherViewModel(
 
     fun setWidgetId(itemId: String, appWidgetId: Int) = persist { repository.setWidgetId(itemId, appWidgetId) }
 
-    fun resizeWidget(itemId: String, rect: WorkspaceGeometry.CellRect, onRefused: () -> Unit = {}) {
+    fun resizeWidget(
+        itemId: String,
+        rect: WorkspaceGeometry.CellRect,
+        onRefused: () -> Unit = {},
+        onSaved: () -> Unit = {}
+    ) {
         val prefs = state.value.prefs
         viewModelScope.launch {
-            if (!repository.resizeWidget(itemId, rect, prefs.gridCols, prefs.gridRows)) onRefused()
+            if (repository.resizeWidget(itemId, rect, prefs.gridCols, prefs.gridRows)) onSaved() else onRefused()
         }
     }
 
@@ -915,7 +983,8 @@ class LauncherViewModel(
     fun overrideFor(item: LauncherItem): AppOverride? {
         // An app's rename and hidden label are the app icon's. A pinned
         // shortcut carries the same package and class, and took the app's
-        // new name with them.
+        // new name with them; its hidden label and icon are its own.
+        if (item.itemType == ItemType.SHORTCUT) return item.shortcutEdit
         if (item.itemType != ItemType.APP) return null
         val pkg = item.packageName ?: return null
         val cls = item.className ?: return null
@@ -933,6 +1002,9 @@ class LauncherViewModel(
         }?.label ?: app.label
 
     fun renameShortcut(itemId: String, label: String) = persist { repository.renameShortcut(itemId, label) }
+
+    fun editShortcut(itemId: String, label: String, edit: AppOverride) =
+        persist { repository.editShortcut(itemId, label, edit) }
 
     fun setAppOverride(app: LaunchableApp, transform: (AppOverride) -> AppOverride) {
         val key = hiddenKey(app)
@@ -996,34 +1068,17 @@ class LauncherViewModel(
     // labels, which left a renamed app filed under its old name - and out
     // of the A-Z rail's reach.
     private fun sortedApps(apps: List<LaunchableApp>): List<LaunchableApp> =
-        when (state.value.prefs.drawerSort) {
-            DrawerSort.ALPHA -> byLabel(apps, descending = false)
-            DrawerSort.ALPHA_REVERSE -> byLabel(apps, descending = true)
-            DrawerSort.INSTALL_DATE -> apps.sortedByDescending { it.installTime }
-            DrawerSort.MOST_USED -> apps.sortedWith(
-                compareByDescending<LaunchableApp> { launchCounts[hiddenKey(it)] ?: 0 }
-                    .then(LabelOrder.by { it.label })
-            )
-        }
+        DrawerOrder.sorted(apps, state.value.prefs.drawerSort, usage())
 
-    // In the device language's alphabet (LabelOrder), each label keyed
-    // once: this runs on the main thread for every list the drawer builds.
-    private fun byLabel(apps: List<LaunchableApp>, descending: Boolean): List<LaunchableApp> =
-        LabelOrder.sorted(apps, descending) { it.label }
+    private fun usage(): AppUsage = AppUsage(launchCounts, recentLaunches, ::hiddenKey)
 
-    // The row over the app list: the apps opened most recently. Until
-    // there is any recency to go on, the most-launched stand in.
-    fun recentApps(limit: Int): List<LaunchableApp> {
-        val visible = visibleApps()
-        if (recentLaunches.isNotEmpty()) {
-            val byKey = visible.associateBy(::hiddenKey)
-            val recent = recentLaunches.mapNotNull { byKey[it] }
-            if (recent.isNotEmpty()) return recent.take(limit)
-        }
-        return visible.filter { (launchCounts[hiddenKey(it)] ?: 0) > 0 }
-            .sortedByDescending { launchCounts[hiddenKey(it)] ?: 0 }
-            .take(limit)
-    }
+    // The apps opened most recently (search's row of them). Until there is
+    // any recency to go on, the most-launched stand in.
+    fun recentApps(limit: Int): List<LaunchableApp> = DrawerOrder.recentRow(visibleApps(), usage(), limit)
+
+    // The drawer's top row, in its own order (drawerTopRowSort).
+    fun topRowApps(limit: Int): List<LaunchableApp> =
+        DrawerOrder.topRow(visibleApps(), state.value.prefs.drawerTopRowSort, usage(), limit)
 
     fun noteLaunch(app: LaunchableApp) = persist { preferences.recordLaunch(hiddenKey(app)) }
 
@@ -1031,7 +1086,9 @@ class LauncherViewModel(
 
     fun workApps(): List<LaunchableApp> = visibleApps().filter { it.userSerial != 0L }
 
-    fun hasWorkApps(): Boolean = state.value.apps.any { it.userSerial != 0L && !it.privateSpace }
+    // A paused work profile counts too, so its tab stays to turn it back on.
+    fun hasWorkApps(): Boolean =
+        workPaused() || state.value.apps.any { it.userSerial != 0L && !it.privateSpace }
 
     fun drawerGroups(): List<DrawerGroup> =
         state.value.prefs.drawerGroups.mapNotNull(DrawerGroup::decode)
@@ -1053,11 +1110,19 @@ class LauncherViewModel(
             DrawerGroupType.TAB -> state.value.prefs.drawerIsolateTabs
         }
 
-    // Every key a TAB-type group takes out of the All/Personal list.
+    // Every key a TAB-type group takes out of the All/Personal list: its
+    // apps', and its drawer folders' (TabFolders).
     fun isolatedTabKeys(): Set<String> =
         drawerGroups()
             .filter { it.type == DrawerGroupType.TAB && leavesMainList(it) }
             .flatMapTo(mutableSetOf()) { it.members }
+
+    // The drawer folders a list shows: a tab's own, or for the main list
+    // (null) every folder no tab took out of it.
+    fun drawerFoldersFor(tab: DrawerGroup?): List<DrawerGroup> {
+        val folders = drawerFolderGroups()
+        return if (tab == null) TabFolders.onMainList(folders, isolatedTabKeys()) else TabFolders.inTab(tab, folders)
+    }
 
     // Like any edit, it makes a smart folder the user's: regenerating the
     // smart ones would otherwise put the folder back without the choice.
@@ -1089,26 +1154,32 @@ class LauncherViewModel(
 
     // The name the group goes by afterwards (unchanged for an empty or
     // same name), or null, and nothing renamed, when another group has the
-    // name: saving it would replace that group.
-    fun renameGroup(group: DrawerGroup, newName: String): String? {
-        val name = groupName(newName)
-        if (name.isEmpty() || name == group.name) return group.name
-        if (drawerGroups().any { it.name == name }) return null
-        viewModelScope.launch {
-            // One edit, so the group is never briefly missing (the drawer's
-            // tabs would rebuild without it), and checked again inside it
-            // for a group that took the name meanwhile.
-            preferences.updateDrawerGroups { groups ->
-                if (groups.any { it.name == name }) {
-                    groups
-                } else {
-                    // A renamed smart folder is the user's now, and
-                    // regenerating the smart ones leaves it be.
-                    groups.map { if (it.name == group.name) it.copy(name = name, smart = false) else it }
+    // name: saving it would replace that group. keepInMain, when given, is
+    // the group's Keep apps in main app tab choice, saved with the name (a
+    // tab's Edit dialog).
+    fun renameGroup(group: DrawerGroup, newName: String, keepInMain: Boolean? = null): String? {
+        val name = groupName(newName).ifEmpty { group.name }
+        val keptNow = !leavesMainList(group)
+        val keep = keepInMain?.takeIf { it != keptNow }
+        val renamed = name != group.name
+        if (renamed && drawerGroups().any { it.name == name }) return null
+        if (renamed || keep != null) {
+            viewModelScope.launch {
+                // One edit, so the group is never briefly missing (the
+                // drawer's tabs would rebuild without it), and checked again
+                // inside it for a group that took the name meanwhile. The
+                // tabs holding a renamed folder follow the new name.
+                preferences.updateDrawerGroups { groups ->
+                    val edited = DrawerGroupEdit.apply(groups, group.name, name, keep)
+                    when {
+                        edited == null -> groups
+                        renamed -> TabFolders.renamed(edited, group.name, name)
+                        else -> edited
+                    }
                 }
-            }
-            if (state.value.prefs.drawerDefaultTab == group.name) {
-                preferences.set(Pref.drawerDefaultTab, name)
+                if (renamed && state.value.prefs.drawerDefaultTab == group.name) {
+                    preferences.set(Pref.drawerDefaultTab, name)
+                }
             }
         }
         return name
@@ -1134,13 +1205,45 @@ class LauncherViewModel(
         }
     }
 
+    // A drag on the Drawer groups page: one type's groups in a new order.
+    fun setGroupOrder(type: DrawerGroupType, names: List<String>) {
+        viewModelScope.launch {
+            preferences.updateDrawerGroups { DrawerGroupOrder.reordered(it, type, names) }
+        }
+    }
+
+    // Undo of a delete on the Drawer groups page: the group back out of
+    // before, the list as it stood when it was deleted.
+    fun restoreGroup(before: List<DrawerGroup>, name: String) {
+        viewModelScope.launch {
+            preferences.updateDrawerGroups { DrawerGroupOrder.restored(it, before, name) }
+        }
+    }
+
     fun appsInGroup(group: DrawerGroup?): List<LaunchableApp> {
         val visible = visibleApps()
         if (group == null) return visible
         return visible.filter { hiddenKey(it) in group.members }
     }
 
-    fun isInGroup(app: LaunchableApp, group: DrawerGroup): Boolean = hiddenKey(app) in group.members
+    // A group's Select apps rows: [apps], and first for a tab the drawer
+    // folders it can hold - each one with apps to show, and any it already
+    // holds, so an emptied one can still be let go.
+    fun groupPicks(group: DrawerGroup, apps: List<LaunchableApp>): List<GroupPick> {
+        val folders = if (group.type == DrawerGroupType.TAB) {
+            drawerFolderGroups().filter { drawerFolderApps(it).isNotEmpty() || isPicked(GroupPick.Folder(it), group) }
+        } else {
+            emptyList()
+        }
+        return folders.map(GroupPick::Folder) + apps.map(GroupPick::App)
+    }
+
+    fun isPicked(pick: GroupPick, group: DrawerGroup): Boolean = memberKey(pick) in group.members
+
+    private fun memberKey(pick: GroupPick): String = when (pick) {
+        is GroupPick.App -> hiddenKey(pick.app)
+        is GroupPick.Folder -> TabFolders.keyOf(pick.group.name)
+    }
 
     fun workTabActive(): Boolean = state.value.prefs.drawerWorkTab && hasWorkApps()
 
@@ -1153,9 +1256,9 @@ class LauncherViewModel(
 
     // A checklist's Save: every changed tick in one write. Picking a smart
     // folder's apps makes it the user's, as a retype does.
-    fun setGroupMembership(groupName: String, changes: Map<LaunchableApp, Boolean>) {
-        val add = changes.filterValues { it }.keys.map(::hiddenKey).toSet()
-        val remove = changes.filterValues { !it }.keys.map(::hiddenKey).toSet()
+    fun setGroupMembership(groupName: String, changes: Map<GroupPick, Boolean>) {
+        val add = changes.filterValues { it }.keys.map(::memberKey).toSet()
+        val remove = changes.filterValues { !it }.keys.map(::memberKey).toSet()
         editGroup(groupName) { it.copy(members = it.members - remove + add, smart = false) }
     }
 
@@ -1173,7 +1276,10 @@ class LauncherViewModel(
     fun removeGroup(name: String) {
         val smart = drawerGroups().firstOrNull { it.name == name }?.smart == true
         viewModelScope.launch {
-            preferences.removeDrawerGroup(name)
+            // One edit: the group goes, and so does its place in any tab.
+            preferences.updateDrawerGroups { groups ->
+                TabFolders.forgotten(groups.filterNot { it.name == name }, name)
+            }
             // A smart folder the user deleted stays deleted as apps install.
             if (smart) preferences.dismissSmartGroup(name)
         }
@@ -1343,19 +1449,85 @@ class LauncherViewModel(
     // Off the main thread: the decode, an install check per item and the
     // snapshot write are no work for it.
     suspend fun importBackup(raw: String): LauncherRepository.ImportResult = withContext(Dispatchers.IO) {
+        repository.importBackup(raw, preferences.snapshot(), ::isInstalled, widgetBoundCheck())
+    }
+
+    // A backup file the user picked: Supernova's own, or another launcher's,
+    // whose home screen is brought over.
+    // Read first, import after: the user confirms in between, told whether the
+    // file replaces settings too or only the home screen.
+    internal suspend fun readBackupFile(uri: android.net.Uri): PickedBackup = withContext(Dispatchers.IO) {
+        BackupFiles.read(getApplication(), uri)
+    }
+
+    internal suspend fun importPicked(picked: PickedBackup): LauncherRepository.ImportResult =
+        withContext(Dispatchers.IO) { importPickedNow(picked) }
+
+    private suspend fun importPickedNow(picked: PickedBackup): LauncherRepository.ImportResult =
+        when (picked) {
+            is PickedBackup.Own -> importBackup(picked.json)
+            is PickedBackup.Other -> repository.importLayout(
+                picked.layout,
+                preferences.snapshot(),
+                LayoutConverter.Phone(
+                    activityFor = catalog::launchActivity,
+                    encodeIcon = { bytes ->
+                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            ?.let(com.supernova.launcher.data.GalleryIconCodec::encode)
+                    },
+                    widgetName = ::widgetName,
+                    installed = ::isInstalled
+                ),
+                ::isInstalled,
+                widgetBoundCheck()
+            )
+        }
+
+    private fun isInstalled(packageName: String, userSerial: Long): Boolean =
+        catalog.isInstalled(packageName, userSerial)
+
+    // The name of an installed widget, by its provider's "package/class".
+    private fun widgetName(provider: String, userSerial: Long): String? {
+        val component = android.content.ComponentName.unflattenFromString(provider)
+        val app = getApplication<Application>()
+        return catalog.userForSerial(userSerial)
+            ?.let { android.appwidget.AppWidgetManager.getInstance(app).getInstalledProvidersForProfile(it) }
+            ?.firstOrNull { it.provider == component }
+            ?.loadLabel(app.packageManager)
+    }
+
+    // Whether a widget id is still bound here, to that provider.
+    private fun widgetBoundCheck(): (Int, String?) -> Boolean {
         val manager = android.appwidget.AppWidgetManager.getInstance(getApplication())
         val hostIds = com.supernova.launcher.widget.SupernovaWidgetHost(
             getApplication(), com.supernova.launcher.widget.SupernovaWidgetHost.HOST_ID
         ).appWidgetIds.toSet()
-        repository.importBackup(
-            raw,
-            preferences.snapshot(),
-            isInstalled = { pkg, userSerial -> catalog.isInstalled(pkg, userSerial) },
-            widgetBound = { id, provider ->
-                id in hostIds && provider != null &&
-                    manager.getAppWidgetInfo(id)?.provider?.flattenToString() == provider
-            }
+        return { id, provider ->
+            id in hostIds && provider != null &&
+                manager.getAppWidgetInfo(id)?.provider?.flattenToString() == provider
+        }
+    }
+
+    data class FreeSpot(val page: Int, val cellX: Int, val cellY: Int)
+
+    // Where a tapped "Add to Home" puts something: the page given when it has
+    // room, else the next page with room (then the ones before it), else a
+    // new page after the last, which the pager shows once the item is on it.
+    // Null only when no page has room and no more pages can be added.
+    fun freeSpotFrom(page: Int, spanX: Int = 1, spanY: Int = 1): FreeSpot? {
+        val current = state.value
+        val model = current.model
+        val shown = maxOf(
+            1,
+            model.pageCount,
+            (model.items.filter { it.container == ContainerType.WORKSPACE }.maxOfOrNull { it.page } ?: -1) + 1
         )
+        val start = page.coerceIn(0, shown - 1)
+        for (p in (start until shown) + (0 until start)) {
+            firstFreeWorkspaceCell(p, spanX, spanY)?.let { return FreeSpot(p, it.first, it.second) }
+        }
+        val fits = spanX <= current.prefs.gridCols && spanY <= current.prefs.gridRows
+        return if (fits && shown < LauncherRepository.MAX_PAGES) FreeSpot(shown, 0, 0) else null
     }
 
     // Null when the page has no free area of the requested size.

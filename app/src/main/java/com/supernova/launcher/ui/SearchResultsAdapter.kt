@@ -23,6 +23,7 @@ import com.supernova.launcher.databinding.ItemSearchRowBinding
 import com.supernova.launcher.databinding.ItemSearchTopHitBinding
 import com.supernova.launcher.search.SearchChip
 import com.supernova.launcher.search.SearchResult
+import kotlin.math.roundToInt
 
 // The search window's list. Empty query: suggested-shortcut
 // pills, the recently opened apps, a hairline, then the drawer's folders and
@@ -54,7 +55,12 @@ class SearchResultsAdapter(
         // lift the picture from and to anchor the menu on.
         val onAppLongPress: (View, LaunchableApp) -> Unit = { _, _ -> },
         val onShortcutLongPress: (View, SearchResult.Shortcut) -> Unit = { _, _ -> },
-        val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> }
+        val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> },
+        // The empty window's Recent searches: a tap runs one again, a
+        // long-press forgets it, the header's Clear forgets them all.
+        val onRecent: (String) -> Unit = {},
+        val onRemoveRecent: (String) -> Unit = {},
+        val onClearRecents: () -> Unit = {}
     )
 
     // The best match, shown as a card with the app's own shortcuts.
@@ -74,6 +80,8 @@ class SearchResultsAdapter(
         ) : Row
         data class Top(val hit: TopHit) : Row
         data class ProviderIcons(val query: String) : Row
+        object RecentHeader : Row
+        data class Recent(val query: String) : Row
     }
 
     // Provider marks are raw app icons, so they go through the same renderer
@@ -107,6 +115,9 @@ class SearchResultsAdapter(
     // Grid columns for the app tiles; the controller derives it from the
     // drawer's column setting.
     var columns: Int = 4
+    // The drawer's grid tile when its Rows are set: the app tiles take its
+    // row height and fit. Null keeps them at their own height.
+    var tileLook: AppDrawerAdapter.TileLook? = null
 
     init {
         setHasStableIds(true)
@@ -136,6 +147,8 @@ class SearchResultsAdapter(
         is Row.AppGrid -> "grid"
         is Row.Top -> "top"
         is Row.ProviderIcons -> "providers"
+        Row.RecentHeader -> "recent-header"
+        is Row.Recent -> "recent/${row.query}"
         is Row.Result -> when (val result = row.result) {
             is SearchResult.Calculation -> "calc"
             is SearchResult.Card -> "card/${result.card.id}"
@@ -158,6 +171,10 @@ class SearchResultsAdapter(
         cardTextColor = cardText
     }
 
+    // False for the app drawer's list: a query matching nothing there goes
+    // straight to "Search with".
+    var showNoMatches = true
+
     // oneRowApps: the app tiles are capped to a single grid row.
     fun submitResults(
         results: List<SearchResult>,
@@ -179,13 +196,19 @@ class SearchResultsAdapter(
             .filter { topHit == null || it.packageName != topHit.app.packageName }
             .mapTo(rows) { Row.Result(it) }
         results.filterIsInstance<SearchResult.Contact>().mapTo(rows) { Row.Result(it) }
+        // Nothing on the phone matched: said, above the ways to search on.
+        if (rows.isEmpty() && showNoMatches) rows.add(Row.Header(R.string.search_no_matches))
         // Every query ends with the providers; the web engine leads them.
         // With every provider off it's the web engine alone, as a plain row.
+        // Only Google has a mark among them, so another engine keeps its row.
+        val webRows = results.filterIsInstance<SearchResult.Web>().map { Row.Result(it) }
         if (SearchMarks.hasProviders(prefs)) {
+            val engine = prefs?.searchWebProvider ?: com.supernova.launcher.search.WebProvider.GOOGLE
+            if (engine != com.supernova.launcher.search.WebProvider.GOOGLE) rows.addAll(webRows)
             rows.add(Row.Header(R.string.search_with))
             rows.add(Row.ProviderIcons(query))
         } else {
-            results.filterIsInstance<SearchResult.Web>().mapTo(rows) { Row.Result(it) }
+            rows.addAll(webRows)
         }
         notifyRowsChanged()
     }
@@ -201,9 +224,14 @@ class SearchResultsAdapter(
         shortcuts: List<SuggestedShortcuts.Pill>,
         frequentApps: List<LaunchableApp>,
         allApps: List<LaunchableApp>,
-        folders: List<SearchResult.Folder> = emptyList()
+        folders: List<SearchResult.Folder> = emptyList(),
+        recents: List<String> = emptyList()
     ) {
         rows.clear()
+        if (recents.isNotEmpty()) {
+            rows.add(Row.RecentHeader)
+            recents.mapTo(rows) { Row.Recent(it) }
+        }
         if (shortcuts.isNotEmpty()) rows.add(Row.Shortcuts(shortcuts))
         if (frequentApps.isNotEmpty()) rows.add(Row.Frequent(frequentApps))
         if (allApps.isNotEmpty() || folders.isNotEmpty()) {
@@ -223,6 +251,8 @@ class SearchResultsAdapter(
         is Row.AppGrid -> TYPE_GRID
         is Row.Top -> TYPE_TOP
         is Row.ProviderIcons -> TYPE_PROVIDER_ICONS
+        Row.RecentHeader -> TYPE_RECENT_HEADER
+        is Row.Recent -> TYPE_ROW
         is Row.Result -> when (row.result) {
             is SearchResult.Calculation -> TYPE_CALC
             is SearchResult.Card -> TYPE_CARD
@@ -246,10 +276,9 @@ class SearchResultsAdapter(
             )
             TYPE_TOP -> TopHitHolder(ItemSearchTopHitBinding.inflate(inflater, parent, false))
             TYPE_HEADER -> HeaderHolder(ItemSearchHeaderBinding.inflate(inflater, parent, false))
+            TYPE_RECENT_HEADER -> recentHeader(parent)
             TYPE_DIVIDER -> DividerHolder(ItemSearchDividerBinding.inflate(inflater, parent, false))
-            TYPE_GRID -> GridHolder(fullWidth(SearchGridView(parent.context).apply {
-                setPadding((8 * density).toInt(), 0, (8 * density).toInt(), 0)
-            }) as SearchGridView)
+            TYPE_GRID -> GridHolder(fullWidth(SearchGridView(parent.context)) as SearchGridView)
             TYPE_SHORTCUTS -> ShortcutsHolder(fullWidth(FlowLayout(parent.context).apply {
                 maxLines = 1
                 setPadding((16 * density).toInt(), (4 * density).toInt(), (16 * density).toInt(), 0)
@@ -266,6 +295,8 @@ class SearchResultsAdapter(
             is Row.Frequent -> (holder as FrequentHolder).bind(row.apps)
             is Row.Shortcuts -> (holder as ShortcutsHolder).bind(row.pills)
             is Row.ProviderIcons -> (holder as ProviderIconsHolder).bind(row.query)
+            Row.RecentHeader -> (holder as RecentHeaderHolder).bind()
+            is Row.Recent -> (holder as RowHolder).bindRecent(row.query)
             Row.Divider -> (holder as DividerHolder).bind()
             is Row.AppGrid -> (holder as GridHolder).bind(row.apps, row.folders)
             is Row.Top -> (holder as TopHitHolder).bind(row.hit)
@@ -355,6 +386,10 @@ class SearchResultsAdapter(
     private inner class GridHolder(private val grid: SearchGridView) : RecyclerView.ViewHolder(grid) {
         fun bind(apps: List<SearchResult.App>, folders: List<SearchResult.Folder>) {
             grid.columns = columns
+            // The drawer's side padding once it is wider than the grid's own,
+            // so the tiles sit in the drawer's columns.
+            val side = (gridSideDp() * grid.resources.displayMetrics.density).toInt()
+            if (grid.paddingLeft != side || grid.paddingRight != side) grid.setPadding(side, 0, side, 0)
             // The tiles already there are bound again rather than replaced
             // (see rowIds): one taken out from under a finger took its
             // long-press with it.
@@ -375,6 +410,7 @@ class SearchResultsAdapter(
                 }
                 tile.appLabel.text = folder.label
                 tile.appLabel.setTextColor(textColor)
+                fitTile(tile)
                 tile.root.contentDescription = grid.context.getString(R.string.folder_desc, folder.label)
                 tile.root.setOnClickListener { callbacks.onFolder(folder) }
                 tile.root.setOnLongClickListener {
@@ -393,6 +429,7 @@ class SearchResultsAdapter(
                 }
                 tile.appLabel.text = highlighted(app.label, result.highlight)
                 tile.appLabel.setTextColor(textColor)
+                fitTile(tile)
                 tile.root.contentDescription = app.label
                 tile.root.setOnClickListener { callbacks.onApp(it, app) }
                 tile.root.setOnLongClickListener {
@@ -401,6 +438,25 @@ class SearchResultsAdapter(
                 }
             }
         }
+    }
+
+    // A tile in the drawer's row and fit, or back at its own height. The
+    // icon stays inside this grid's cell, which a windowed search makes
+    // narrower than the drawer's.
+    private fun fitTile(tile: ItemDrawerAppBinding) {
+        val density = tile.root.resources.displayMetrics.density
+        val look = tileLook
+        if (look == null) {
+            val pad = (AppDrawerAdapter.TILE_PADDING_V_DP * density).toInt()
+            val icon = (AppDrawerAdapter.TILE_ICON_DP * density).roundToInt()
+            DrawerTileFit.apply(tile, 0, icon, DrawerTileFit.of(0, pad, 0, 0))
+            return
+        }
+        val grid = tile.root.parent as? SearchGridView
+        val cell = grid?.let { (it.width - it.paddingLeft - it.paddingRight) / columns } ?: 0
+        val room = cell - tile.root.paddingLeft - tile.root.paddingRight
+        val icon = if (room > 0) minOf(look.iconPx, room) else look.iconPx
+        DrawerTileFit.apply(tile, look.rowPx, icon, look.fit)
     }
 
     private inner class ShortcutsHolder(private val flow: FlowLayout) : RecyclerView.ViewHolder(flow) {
@@ -524,6 +580,20 @@ class SearchResultsAdapter(
             (binding.root as ViewGroup).addView(button, ViewGroup.LayoutParams(size, size))
         }
 
+        fun bindRecent(query: String) {
+            reset()
+            binding.resultIcon.setImageResource(R.drawable.ic_history)
+            tintIcon()
+            binding.resultLabel.text = query
+            binding.root.contentDescription =
+                binding.root.context.getString(R.string.search_recent_desc, query)
+            binding.root.setOnClickListener { callbacks.onRecent(query) }
+            binding.root.setOnLongClickListener {
+                callbacks.onRemoveRecent(query)
+                true
+            }
+        }
+
         fun bindWeb(web: SearchResult.Web) {
             reset()
             binding.resultIcon.setImageResource(R.drawable.ic_search)
@@ -559,6 +629,51 @@ class SearchResultsAdapter(
         private fun tintIcon() {
             ImageViewCompat.setImageTintList(binding.resultIcon, ColorStateList.valueOf(textColor))
         }
+    }
+
+    // "Recent searches", with a Clear button at its end in the accent.
+    private inner class RecentHeaderHolder(
+        private val row: android.widget.LinearLayout,
+        private val title: android.widget.TextView,
+        private val clear: android.widget.TextView
+    ) : RecyclerView.ViewHolder(row) {
+        fun bind() {
+            title.setTextColor(textColor)
+            clear.setTextColor(accentColor)
+            clear.setOnClickListener { callbacks.onClearRecents() }
+        }
+    }
+
+    // The header's own label, as item_search_header draws it, and Clear.
+    private fun recentHeader(parent: ViewGroup): RecentHeaderHolder {
+        val context = parent.context
+        val inflater = LayoutInflater.from(context)
+        val title = ItemSearchHeaderBinding.inflate(inflater, parent, false).headerLabel.apply {
+            setText(R.string.search_recent_header)
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val side = context.resources.getDimensionPixelSize(R.dimen.space_md)
+        val clear = android.widget.TextView(context).apply {
+            setText(R.string.search_recent_clear)
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, context.resources.getDimension(R.dimen.text_body))
+            gravity = android.view.Gravity.CENTER
+            minHeight = context.resources.getDimensionPixelSize(R.dimen.touch_min)
+            setPadding(side, 0, side, 0)
+            val ripple = android.util.TypedValue()
+            context.theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+            setBackgroundResource(ripple.resourceId)
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = side / 2 }
+        }
+        val row = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.BOTTOM
+            addView(title)
+            addView(clear)
+        }
+        fullWidth(row)
+        return RecentHeaderHolder(row, title, clear)
     }
 
     private inner class HeaderHolder(
@@ -599,12 +714,16 @@ class SearchResultsAdapter(
                         callbacks.onFrequentApp(anchor, app)
                     }
                 },
-                textColor, columns, sidePaddingDp = 8
+                textColor, columns, sidePaddingDp = gridSideDp()
             )
         }
     }
 
+    // The app grid's sides, and the frequent row's that lines up with it.
+    private fun gridSideDp(): Int = maxOf(GRID_SIDE_DP, prefs?.drawerPaddingH ?: 0)
+
     private companion object {
+        const val GRID_SIDE_DP = 8
         const val ACTION_TAG = "contact-action"
         const val TYPE_ROW = 0
         const val TYPE_CALC = 1
@@ -616,5 +735,6 @@ class SearchResultsAdapter(
         const val TYPE_GRID = 8
         const val TYPE_SHORTCUTS = 9
         const val TYPE_DIVIDER = 10
+        const val TYPE_RECENT_HEADER = 11
     }
 }

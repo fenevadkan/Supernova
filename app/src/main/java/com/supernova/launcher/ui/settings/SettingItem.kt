@@ -20,6 +20,22 @@ sealed class SettingItem {
     // row holds inside itself, which have no row of their own to match.
     open val searchTitles: List<Int> get() = emptyList()
 
+    // Why the row can't do anything now, or null while it can: a row whose
+    // effect waits on a setting elsewhere stays listed, greyed, with a line
+    // saying what to turn on, rather than vanishing (blockedWhen).
+    var blockedBy: (LauncherPrefs) -> Int? = { null }
+        private set
+
+    fun blockedWhen(reason: (LauncherPrefs) -> Int?): SettingItem = apply { blockedBy = reason }
+
+    // More words the settings search finds the row by, space-separated in
+    // one string ("landscape" finds Screen orientation); 0 for none.
+    @StringRes
+    var keywords: Int = 0
+        private set
+
+    fun searchableBy(@StringRes words: Int): SettingItem = apply { keywords = words }
+
     class Toggle(
         @StringRes override val title: Int,
         val get: (LauncherPrefs) -> Boolean,
@@ -67,12 +83,14 @@ sealed class SettingItem {
     // action that runs on the tap; a warning (a card that needs access),
     // which tints the tile; and a status that reads as good news (a granted
     // permission), which colours the value under the title when it holds.
+    // A notice (tappable = false) only explains; it takes no taps.
     class RowLook(
         @DrawableRes val icon: Int = 0,
         val swatch: ((LauncherPrefs) -> Int?)? = null,
         val chevron: Boolean = true,
         val warn: Boolean = false,
-        val positive: (() -> Boolean)? = null
+        val positive: (() -> Boolean)? = null,
+        val tappable: Boolean = true
     )
 
     // An entry on the root list: a leading icon, a larger title,
@@ -168,5 +186,8 @@ class Choice(
     @StringRes val title: Int,
     val labels: List<CharSequence>,
     val selected: Int,
-    val onPick: (Int) -> Unit
+    val onPick: (Int) -> Unit,
+    // A colour per option, drawn as a dot before its label (a colour choice);
+    // a null entry is an option with no colour of its own (Default).
+    val swatches: List<Int?>? = null
 )

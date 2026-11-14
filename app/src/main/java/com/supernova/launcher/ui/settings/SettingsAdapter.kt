@@ -161,17 +161,26 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
         val open = openHere
         val out = ArrayList<SettingItem>(items.size)
         var hidden = false
-        for (item in items) {
-            when (item) {
-                is SettingItem.Header, is SettingItem.Preview, is SettingItem.Accordion -> hidden = false
-                else -> {}
-            }
-            if (!hidden && item.visibleIf(prefs)) out.add(item)
+        for ((index, item) in items.withIndex()) {
+            val opensGroup = item is SettingItem.Header || item is SettingItem.Accordion
+            if (opensGroup || item is SettingItem.Preview) hidden = false
+            // A group label or accordion whose rows are all hidden would
+            // stand alone over nothing, so it goes with them.
+            val shown = item.visibleIf(prefs) && (!opensGroup || groupHasRows(index))
+            if (!hidden && shown) out.add(item)
             if (item is SettingItem.Accordion) hidden = item.title !in open
         }
         visible = out
         notifyDataSetChanged()
     }
+
+    // Whether the Header or Accordion at index has a row its prefs show,
+    // collapsed or not: its rows run to the next Header, Accordion or
+    // Preview.
+    private fun groupHasRows(index: Int): Boolean =
+        items.drop(index + 1)
+            .takeWhile { it !is SettingItem.Header && it !is SettingItem.Accordion && it !is SettingItem.Preview }
+            .any { it.visibleIf(prefs) }
 
     override fun getItemCount(): Int = visible.size
 
@@ -295,8 +304,10 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
                 binding.root.paddingEnd, binding.root.paddingBottom
             )
             binding.settingTitle.setText(item.title)
-            if (item.subtitle != 0) {
-                binding.settingSubtitle.setText(item.subtitle)
+            val blocked = item.blockedBy(prefs)
+            val subtitle = blocked ?: item.subtitle
+            if (subtitle != 0) {
+                binding.settingSubtitle.setText(subtitle)
                 binding.settingSubtitle.visibility = View.VISIBLE
             } else {
                 binding.settingSubtitle.visibility = View.GONE
@@ -307,6 +318,12 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
             binding.settingSwitch.isChecked = item.get(prefs)
             binding.settingSwitch.setOnCheckedChangeListener { _, checked -> item.set(checked) }
             binding.root.setOnClickListener { binding.settingSwitch.toggle() }
+            // Greyed: the title and switch fade, the reason stays readable.
+            val alpha = if (blocked != null) BLOCKED_ALPHA else 1f
+            binding.settingTitle.alpha = alpha
+            binding.settingSwitch.alpha = alpha
+            binding.settingSwitch.isEnabled = blocked == null
+            binding.root.isEnabled = blocked == null
         }
     }
 
@@ -328,10 +345,17 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
                 binding.settingSeek.progress = current - item.min
             }
             binding.settingValue.text = item.display(current)
+            // Named, and its value read as the row shows it (not a percent).
+            val title = binding.root.context.getString(item.title)
+            binding.settingSeek.contentDescription = title
+            androidx.core.view.ViewCompat.setStateDescription(binding.settingSeek, item.display(current))
+            binding.stepDown.contentDescription = binding.root.context.getString(R.string.a11y_decrease, title)
+            binding.stepUp.contentDescription = binding.root.context.getString(R.string.a11y_increase, title)
             binding.settingSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                     val value = item.min + progress
                     binding.settingValue.text = item.display(value)
+                    androidx.core.view.ViewCompat.setStateDescription(seekBar, item.display(value))
                     if (fromUser) previews.onTick(item, value)
                 }
 
@@ -383,15 +407,39 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
             }
             val density = binding.root.resources.displayMetrics.density
             bindTile(item.look)
-            binding.groupRowChevron.visibility = if (item.look.chevron) View.VISIBLE else View.INVISIBLE
+            binding.groupRowChevron.visibility =
+                if (item.look.chevron && item.look.tappable) View.VISIBLE else View.INVISIBLE
             val twoLines = bindValue(item, prefs)
             // Two lines get the taller row's padding: 64dp, as on the root list.
             val vertical = ((if (twoLines) TWO_LINE_PADDING_DP else ONE_LINE_PADDING_DP) * density).toInt()
             val start = if (item.look.icon == 0 && tiled) GROUP_TEXT_START_DP else GROUP_SIDE_DP
             binding.root.setPaddingRelative((start * density).toInt(), vertical, binding.root.paddingEnd, vertical)
-            binding.root.setOnClickListener {
-                onTap(it)
-                item.onClick()
+            val blocked = item.blockedBy(prefs)
+            if (blocked != null) {
+                // Greyed: the reason stands in for the value, under the title.
+                binding.settingSubtitle.setText(blocked)
+                binding.settingSubtitle.setTextColor(binding.root.context.getColor(R.color.textSecondary))
+                binding.settingSubtitle.visibility = View.VISIBLE
+                binding.groupRowValue.visibility = View.GONE
+                binding.groupRowSwatch.visibility = View.GONE
+                binding.root.setPaddingRelative(
+                    binding.root.paddingStart, (TWO_LINE_PADDING_DP * density).toInt(),
+                    binding.root.paddingEnd, (TWO_LINE_PADDING_DP * density).toInt()
+                )
+            }
+            val alpha = if (blocked != null) BLOCKED_ALPHA else 1f
+            binding.settingTitle.alpha = alpha
+            binding.groupRowTile.alpha = alpha
+            binding.groupRowChevron.alpha = alpha
+            binding.root.isEnabled = blocked == null
+            if (item.look.tappable) {
+                binding.root.setOnClickListener {
+                    onTap(it)
+                    item.onClick()
+                }
+            } else {
+                binding.root.setOnClickListener(null)
+                binding.root.isClickable = false
             }
         }
 
@@ -601,6 +649,16 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
             binding.settingTitle.setText(item.title)
             binding.accordionChevron.rotation = if (expanded) 180f else 0f
             binding.root.setOnClickListener { onToggle(item.title) }
+            // Open or closed, said as well as drawn by the chevron.
+            val context = binding.root.context
+            androidx.core.view.ViewCompat.setStateDescription(
+                binding.root, context.getString(if (expanded) R.string.a11y_expanded else R.string.a11y_collapsed)
+            )
+            androidx.core.view.ViewCompat.replaceAccessibilityAction(
+                binding.root,
+                androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                context.getString(if (expanded) R.string.a11y_collapse else R.string.a11y_expand), null
+            )
         }
     }
 
@@ -626,5 +684,7 @@ class SettingsAdapter(private val previews: PreviewController) : RecyclerView.Ad
         // A card row's vertical padding: 56dp on one line, 64dp on two.
         const val ONE_LINE_PADDING_DP = 8
         const val TWO_LINE_PADDING_DP = 12
+        // A greyed row's title and control: Material's disabled emphasis.
+        const val BLOCKED_ALPHA = 0.38f
     }
 }

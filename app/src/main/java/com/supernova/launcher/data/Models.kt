@@ -6,7 +6,9 @@ import com.supernova.launcher.ui.BadgePosition
 import com.supernova.launcher.ui.DockBgStyle
 import com.supernova.launcher.ui.DrawerSort
 import com.supernova.launcher.ui.DrawerStyle
+import com.supernova.launcher.ui.DrawerTabAlign
 import com.supernova.launcher.ui.DrawerTabBar
+import com.supernova.launcher.ui.DrawerTabContent
 import com.supernova.launcher.ui.DrawerTabStyle
 import com.supernova.launcher.ui.DrawerTransition
 import com.supernova.launcher.ui.FolderMode
@@ -18,6 +20,7 @@ import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
 import com.supernova.launcher.ui.StatusBarIcons
+import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.theme.AccentColor
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.ThemeMode
@@ -92,7 +95,13 @@ data class LauncherItem(
     val iconBase64: String? = null,
     // Folders only, Edit's Reshape switched off: the custom icon (a pack
     // drawable or a photo) is drawn as it is, not fitted to the icon shape.
-    val iconRaw: Boolean = false
+    val iconRaw: Boolean = false,
+    // Shortcuts that aren't launcher actions: what the item's own Edit
+    // changed - hidden label, a custom icon (pack drawable, app icon or
+    // photo), shape and style. Its label stays in `label`; the shortcut's
+    // own picture stays in iconBase64 and comes back when the custom icon
+    // is reset.
+    val shortcutEdit: AppOverride? = null
 )
 
 // Per-app customization, keyed "userSerial/pkg/cls" in LauncherModel so one
@@ -184,6 +193,8 @@ data class LauncherPrefs(
     val dockPages: Int = 1,
     val dockBgStyle: DockBgStyle = DockBgStyle.NONE,
     val dockBgOpacity: Float = 0.3f,
+    // The dock background's corner radius, in dp.
+    val dockBgRadius: Int = 14,
     // Dock background runs flush to the window's bottom edge (no side or
     // bottom margins, square bottom corners), meeting the transparent nav
     // bar the way a draw-behind-navigation option reads. The window
@@ -223,9 +234,14 @@ data class LauncherPrefs(
     // Tab type: CLASSIC (a bar under the label) or BUBBLE (a pill
     // behind it); DrawerTabStyle names.
     val drawerTabStyle: DrawerTabStyle = DrawerTabStyle.CLASSIC,
+    // What each tab shows (DrawerTabContent names), and where the tabs sit
+    // in their row (DrawerTabAlign names).
+    val drawerTabContent: DrawerTabContent = DrawerTabContent.LABEL,
+    val drawerTabAlign: DrawerTabAlign = DrawerTabAlign.START,
     // Isolate tabs: a sideways swipe on the list stays on the tab.
     val drawerTabsNoSwipe: Boolean = false,
-    // Horizontal most-launched strip pinned above the drawer list.
+    // The top row over the drawer list (recently opened apps by default,
+    // drawerTopRowSort).
     val drawerFrequentRow: Boolean = true,
     // Keep the scroll position across close/reopen instead of resetting to top.
     val drawerRememberPosition: Boolean = false,
@@ -242,6 +258,11 @@ data class LauncherPrefs(
     // Folders on again clears it.
     val smartFoldersDismissed: Set<String> = emptySet(),
     val drawerIconScale: Float = 1f,
+    // Extra padding around the drawer's app list, in dp per axis: the
+    // columns share out what the sides leave, the rows what top and bottom
+    // leave.
+    val drawerPaddingH: Int = 0,
+    val drawerPaddingV: Int = 0,
     // When on, the drawer follows iconScale and its scale slider hides. On
     // by default.
     val drawerMatchDesktop: Boolean = true,
@@ -261,13 +282,17 @@ data class LauncherPrefs(
     val swipeDownHaptic: Boolean = true,
     // Fast-scroller active-letter color; "" follows the drawer accent.
     val drawerScrubberColor: String = "",
-    // Header action buttons beside the drawer search field (comma-joined
-    // DrawerActionButton names); "" = none.
+    // The buttons inside the drawer search field (comma-joined
+    // SearchBarChip names, see SearchBarButtons); "" = none.
     val drawerActionButtons: String = "",
     // Apps living in TAB-type drawer groups leave the All tab (tab
     // isolation); folder-type groups always did.
     val drawerIsolateTabs: Boolean = false,
     val drawerSort: DrawerSort = DrawerSort.ALPHA,
+    // The drawer top row's apps and order; recently used by default.
+    val drawerTopRowSort: TopRowSort = TopRowSort.RECENTLY_USED,
+    // The sort pickers at the top of the drawer's list and its top row.
+    val drawerSortButtons: Boolean = true,
     // On by default; it only shows with a work profile.
     val drawerWorkTab: Boolean = true,
     // Name of the group tab selected on open ("" = All), and whether the
@@ -372,7 +397,7 @@ data class LauncherPrefs(
     val wallpaperZoom: Boolean = true,
     val autoAddApps: Boolean = false,
     val labelFont: LabelFont = LabelFont.DEFAULT,
-    // One ellipsized line everywhere by default: a wrapped name reads as a
+    // One line everywhere by default: a wrapped name reads as a
     // broken word ("OpenWeathe" over "r"). Per-surface overrides in
     // labelConfig can still allow two lines.
     val labelSingleLine: Boolean = true,

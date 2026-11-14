@@ -13,7 +13,9 @@ import com.supernova.launcher.ui.BadgePosition
 import com.supernova.launcher.ui.DockBgStyle
 import com.supernova.launcher.ui.DrawerSort
 import com.supernova.launcher.ui.DrawerStyle
+import com.supernova.launcher.ui.DrawerTabAlign
 import com.supernova.launcher.ui.DrawerTabBar
+import com.supernova.launcher.ui.DrawerTabContent
 import com.supernova.launcher.ui.DrawerTabStyle
 import com.supernova.launcher.ui.DrawerTransition
 import com.supernova.launcher.ui.FolderMode
@@ -25,6 +27,7 @@ import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
 import com.supernova.launcher.ui.StatusBarIcons
+import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.theme.AccentColor
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.ThemeMode
@@ -37,6 +40,12 @@ import kotlinx.serialization.encoding.AbstractEncoder
 import kotlinx.serialization.encoding.CompositeDecoder
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
+
+// One setting's new value, for writing several in a single store edit
+// (LauncherPreferences.setAll): one emission, so the icons re-render once.
+class PrefWrite<T : Any>(val spec: PrefSpec<T>, val value: T) {
+    internal fun into(target: MutablePreferences) = spec.write(target, value)
+}
 
 // A setting as it is stored. It fills the LauncherPrefs field named after
 // its key ("grid_rows" is gridRows), and its default is that field's own.
@@ -120,6 +129,7 @@ object Pref {
     private const val DESKTOP_PADDING_MAX = 48
     private const val WIDGET_PADDING_MAX = 24
     private const val WIDGET_RADIUS_MAX = 32
+    private const val DOCK_BG_RADIUS_MAX = 24
     private const val LABEL_SIZE_MIN = 9
     private const val LABEL_SIZE_MAX = 18
     private const val DAY_LAST_MINUTE = 1439
@@ -175,6 +185,7 @@ object Pref {
     val dockPages = int("dock_pages", 1..PAGES_OR_ROWS_MAX)
     val dockBgStyle = choice("dock_bg_style", DockBgStyle.entries)
     val dockBgOpacity = float("dock_bg_opacity", 0f..1f)
+    val dockBgRadius = int("dock_bg_radius", 0..DOCK_BG_RADIUS_MAX)
     val dockBgBehindNav = bool("dock_bg_behind_nav")
     val dockBgPadding = bool("dock_bg_padding")
     val dockLabels = bool("dock_labels")
@@ -191,6 +202,8 @@ object Pref {
     val drawerTransition = choice("drawer_transition", DrawerTransition.entries)
     val drawerTabBar = choice("drawer_tab_bar", DrawerTabBar.entries)
     val drawerTabStyle = choice("drawer_tab_style", DrawerTabStyle.entries)
+    val drawerTabContent = choice("drawer_tab_content", DrawerTabContent.entries)
+    val drawerTabAlign = choice("drawer_tab_align", DrawerTabAlign.entries)
     val drawerTabsNoSwipe = bool("drawer_tabs_no_swipe")
     val drawerFrequentRow = bool("drawer_frequent_row")
     val drawerRememberPosition = bool("drawer_remember_position")
@@ -199,6 +212,8 @@ object Pref {
     val smartFolders = bool("smart_folders")
     val smartFoldersDismissed = textSet("smart_folders_dismissed")
     val drawerIconScale = float("drawer_icon_scale", ICON_SCALE_MIN..ICON_SCALE_MAX)
+    val drawerPaddingH = int("drawer_padding_h", 0..DESKTOP_PADDING_MAX)
+    val drawerPaddingV = int("drawer_padding_v", 0..DESKTOP_PADDING_MAX)
     val drawerMatchDesktop = bool("drawer_match_desktop")
     val drawerBgOpacity = float("drawer_bg_opacity", DRAWER_OPACITY_MIN..1f)
     val drawerFastScroller = bool("drawer_fast_scroller")
@@ -210,6 +225,8 @@ object Pref {
     val drawerActionButtons = text("drawer_action_buttons")
     val drawerIsolateTabs = bool("drawer_isolate_tabs")
     val drawerSort = choice("drawer_sort", DrawerSort.entries)
+    val drawerTopRowSort = choice("drawer_top_row_sort", TopRowSort.entries)
+    val drawerSortButtons = bool("drawer_sort_buttons")
     val drawerWorkTab = bool("drawer_work_tab")
     val drawerDefaultTab = text("drawer_default_tab")
     val drawerHideAllTab = bool("drawer_hide_all_tab")
