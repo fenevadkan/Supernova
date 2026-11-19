@@ -187,7 +187,8 @@ class DrawerGroupsImportTest {
         val tabs = made.filter { it.type == DrawerGroupType.TAB }
         assertEquals(listOf("Tab A", "Tab B"), tabs.map { it.name })
         assertEquals(listOf(0, 1), tabs.map { it.order })
-        assertEquals(setOf("0/com.a/com.a.Main", TabFolders.keyOf("Chat")), tabs[0].members)
+        val chat = made.single { it.name == "Chat" }
+        assertEquals(setOf("0/com.a/com.a.Main", TabFolders.keyOf(chat.id)), tabs[0].members)
         assertEquals(false, tabs[0].keepInMain)
     }
 
@@ -206,7 +207,23 @@ class DrawerGroupsImportTest {
     }
 
     @Test
-    fun namesStayUniqueAndStorable() {
+    fun foldersKeepTheFoldersTheyHold() {
+        val made = DrawerGroupConverter.convert(
+            listOf(
+                group(1, "Social", folder = true, "com.a"),
+                ForeignGroup(2, "Travel", true, 1, folders = listOf(1, 2)),
+                ForeignGroup(3, "Holds gone", true, 2, folders = listOf(4)),
+                group(4, "Gone", folder = true, "com.gone")
+            ),
+            phone
+        )
+        assertEquals(listOf("Social", "Travel"), made.map { it.name })
+        val social = made.single { it.name == "Social" }
+        assertEquals(setOf(TabFolders.keyOf(social.id)), made.single { it.name == "Travel" }.members)
+    }
+
+    @Test
+    fun namesMayRepeatAndStayStorable() {
         val made = DrawerGroupConverter.convert(
             listOf(
                 group(1, "Fun", folder = true, "com.a"),
@@ -216,7 +233,8 @@ class DrawerGroupsImportTest {
             ),
             phone
         )
-        assertEquals(listOf("Fun", "fun 2", "Tab", "A/B"), made.map { it.name })
+        assertEquals(listOf("Fun", "fun", "Tab", "A/B"), made.map { it.name })
+        assertEquals(4, made.map { it.id }.toSet().size)
         made.forEach { assertEquals(it, DrawerGroup.decode(it.encode())) }
     }
 

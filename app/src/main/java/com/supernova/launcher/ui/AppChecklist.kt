@@ -1,11 +1,13 @@
 package com.supernova.launcher.ui
 
 import android.content.Context
+import androidx.core.content.edit
 import android.graphics.drawable.Drawable
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import android.widget.BaseAdapter
 import android.widget.CheckedTextView
 import android.widget.EditText
@@ -28,10 +30,16 @@ class AppChecklist<T>(
     private val apps: List<T>,
     private val checked: BooleanArray,
     private val iconFor: (T) -> Drawable?,
-    private val labelOf: (T) -> String
+    private val labelOf: (T) -> String,
+    // A drawer group's list: whether an unticked row already sits in another
+    // group. A switch over the list hides those (#257); null for no switch.
+    private val placedElsewhere: ((T) -> Boolean)? = null
 ) {
     private val inFolder = apps.indices.filter { checked[it] }
     private val others = apps.indices.filterNot { checked[it] }
+    private val placed: Set<Int> = placedElsewhere?.let { test -> others.filter { test(apps[it]) }.toSet() }.orEmpty()
+    private var hidePlaced = placed.isNotEmpty() && readHidePlaced()
+    private var query: String? = null
     // Indices into apps; DIVIDER between the two groups.
     private var rows: List<Int> = arrange(null)
     private val adapter = RowAdapter()
@@ -41,13 +49,9 @@ class AppChecklist<T>(
         val search = EditText(context).apply {
             hint = context.getString(R.string.search_apps)
             isSingleLine = true
-            // The outlined box draws no inner space of its own for a plain
-            // EditText: without it the text sits on the border.
-            val padH = context.dp(FIELD_PAD_H_DP)
-            val padV = context.dp(FIELD_PAD_V_DP)
-            setPadding(padH, padV, padH, padV)
             doAfterTextChanged { text ->
-                rows = arrange(text?.toString()?.takeIf { it.isNotBlank() })
+                query = text?.toString()?.takeIf { it.isNotBlank() }
+                rows = arrange(query)
                 adapter.notifyDataSetChanged()
             }
         }
@@ -58,6 +62,7 @@ class AppChecklist<T>(
                 bottomMargin = context.dp(BELOW_FIELD_DP)
             }
         )
+        if (placed.isNotEmpty()) addView(placedSwitch())
         val maxHeight = (context.resources.displayMetrics.heightPixels * LIST_SHARE).toInt()
         val list = BoundedListView(context, maxHeight).apply {
             adapter = this@AppChecklist.adapter
@@ -75,21 +80,83 @@ class AppChecklist<T>(
         addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
-    // In a dialog with a Save button. Ticks are kept until Save, which hands
-    // them over; a tap outside or back drops them.
-    fun show(title: CharSequence, onSave: (BooleanArray) -> Unit): AlertDialog? {
+    // In a dialog with Save and Cancel. Ticks are kept until Save, which
+    // hands them over; Cancel or Back drops them. A tap just outside doesn't,
+    // as the boxes sit close to the dialog's edge.
+    fun show(title: CharSequence, onSave: (BooleanArray) -> Unit): AlertDialog? =
+        open(title, renamable = false) { ticks, _ -> onSave(ticks) }
+
+    // The same, with the title a field: a drawer group's name, typed over
+    // in place and handed to Save with the ticks (trimmed, maybe empty).
+    fun showRenamable(title: String, onSave: (BooleanArray, String) -> Unit): AlertDialog? =
+        open(title, renamable = true, onSave)
+
+    private fun open(title: CharSequence, renamable: Boolean, onSave: (BooleanArray, String) -> Unit): AlertDialog? {
         if (apps.isEmpty()) return null
-        val dialog = MaterialAlertDialogBuilder(context)
-            .setTitle(title)
+        val builder = MaterialAlertDialogBuilder(context)
+        val titleField = if (renamable) titleField(builder.context, title) else null
+        if (titleField != null) {
+            builder.setCustomTitle(titleField.parent as View)
+        } else {
+            builder.setTitle(title)
+        }
+        val dialog = builder
             .setView(view)
             .setBackgroundInsetTop(context.dp(INSET_V_DP))
             .setBackgroundInsetBottom(context.dp(INSET_V_DP))
-            .setPositiveButton(R.string.save) { _, _ -> onSave(checked) }
+            .setPositiveButton(R.string.save) { _, _ ->
+                onSave(checked, titleField?.text?.toString()?.trim() ?: title.toString())
+            }
+            .setNegativeButton(R.string.cancel, null)
             .create()
+        dialog.setCanceledOnTouchOutside(false)
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         dialog.show()
         OpenDialogs.track(dialog)
         return dialog
+    }
+
+    // The title as a one-line field in the title's own type, on the line it
+    // would sit on; its underline is what says it can be typed over. The
+    // keyboard waits for a tap: the search field is what most opens are for.
+    private fun titleField(themed: Context, title: CharSequence): EditText {
+        val field = EditText(themed).apply {
+            setTextAppearance(R.style.TextAppearance_Supernova_DialogTitle)
+            setText(title)
+            hint = themed.getString(R.string.group_name)
+            isSingleLine = true
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            LabelLimit.apply(this)
+            setPadding(0, context.dp(TITLE_FIELD_PAD_V_DP), 0, context.dp(TITLE_FIELD_PAD_V_DP))
+        }
+        LinearLayout(themed).apply {
+            setPadding(context.dp(TITLE_PAD_H_DP), context.dp(TITLE_PAD_TOP_DP), context.dp(TITLE_PAD_H_DP), 0)
+            addView(field, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        return field
+    }
+
+    // "Hide apps in other groups", on by default and remembered.
+    private fun placedSwitch(): View = androidx.appcompat.widget.SwitchCompat(context).apply {
+        text = context.getString(R.string.checklist_hide_placed)
+        isChecked = hidePlaced
+        val padH = context.dp(SWITCH_PAD_H_DP)
+        setPadding(padH, 0, padH, context.dp(BELOW_FIELD_DP))
+        setOnCheckedChangeListener { _, on ->
+            hidePlaced = on
+            writeHidePlaced(on)
+            rows = arrange(query)
+            adapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun prefs() = context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE)
+
+    private fun readHidePlaced(): Boolean =
+        runCatching { prefs().getBoolean(KEY_HIDE_PLACED, true) }.getOrDefault(true)
+
+    private fun writeHidePlaced(on: Boolean) {
+        runCatching { prefs().edit { putBoolean(KEY_HIDE_PLACED, on) } }
     }
 
     // Matched across all apps at once, so a typo match in one group drops
@@ -97,7 +164,8 @@ class AppChecklist<T>(
     private fun arrange(query: String?): List<Int> {
         val matched = query?.let { AppMatcher.filter(apps.indices.toList(), it) { i -> labelOf(apps[i]) }.toHashSet() }
         val first = if (matched == null) inFolder else inFolder.filter { it in matched }
-        val rest = if (matched == null) others else others.filter { it in matched }
+        val shown = if (hidePlaced) others.filterNot { it in placed } else others
+        val rest = if (matched == null) shown else shown.filter { it in matched }
         return if (first.isNotEmpty() && rest.isNotEmpty()) first + DIVIDER + rest else first + rest
     }
 
@@ -140,18 +208,32 @@ class AppChecklist<T>(
             } else {
                 minOf(maxHeight, size)
             }
-            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
+            // Its full width, always: the dialog measures it "at most" on a
+            // keyboard's resize, which the rows kept (each label shrank to
+            // its text, the box beside it instead of at the end).
+            val width = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.AT_MOST) {
+                MeasureSpec.makeMeasureSpec(MeasureSpec.getSize(widthMeasureSpec), MeasureSpec.EXACTLY)
+            } else {
+                widthMeasureSpec
+            }
+            super.onMeasure(width, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
         }
     }
 
     private companion object {
         const val DIVIDER = -1
+        const val SWITCH_PAD_H_DP = 24
+        const val UI_PREFS = "checklist_ui_state"
+        const val KEY_HIDE_PLACED = "hide_placed"
         const val LIST_SHARE = 0.55f
         const val BELOW_FIELD_DP = 8
-        const val FIELD_PAD_H_DP = 16
-        const val FIELD_PAD_V_DP = 14
         // The dialog's own 80dp leaves a band above and below the card
         // once the keyboard shrinks the window.
         const val INSET_V_DP = 24
+        // The editable title's place: the dialog title's 24dp sides, a
+        // little less on top for the field's own room under the text.
+        const val TITLE_PAD_H_DP = 24
+        const val TITLE_PAD_TOP_DP = 16
+        const val TITLE_FIELD_PAD_V_DP = 8
     }
 }

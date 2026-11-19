@@ -3,6 +3,8 @@ package com.supernova.launcher.ui.settings
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import com.supernova.launcher.data.LauncherPrefs
+import com.supernova.launcher.ui.LaunchAnimation
+import com.supernova.launcher.ui.ScrollEffect
 
 // What a Preview row renders; each kind maps to one build/tick path in
 // SettingsPreviewView. HOME and SEARCH_BAR are drawn over the wallpaper.
@@ -40,6 +42,14 @@ sealed class SettingItem {
 
     fun shownIn(prefs: LauncherPrefs): Boolean = visibleIf(prefs) && hiddenBy(prefs) == null
 
+    // How deep the row sits under the switch it depends on, 0 for none: a
+    // Toggle followed by deeper rows opens and closes them like the Label
+    // group, and they sit on its band (#227).
+    var nestLevel: Int = 0
+        private set
+
+    fun nested(level: Int = 1): SettingItem = apply { nestLevel = level }
+
     // A row's hiding setting: its title, which way it needs to go, and its
     // page when that is not the row's own (0).
     class HiddenBy(@StringRes val setting: Int, val needs: Needs, @StringRes val page: Int = 0) {
@@ -53,6 +63,20 @@ sealed class SettingItem {
         private set
 
     fun searchableBy(@StringRes words: Int): SettingItem = apply { keywords = words }
+
+    // The fixed sentence under a Row's title, for the settings search to
+    // match after titles (#218); 0 for none. A Toggle's subtitle counts
+    // without this. Never a value that changes with the settings.
+    @StringRes
+    var description: Int = 0
+        private set
+
+    fun describedBy(@StringRes text: Int): SettingItem = apply { description = text }
+
+    // What the settings search reads as the row's description.
+    @get:StringRes
+    val searchDescription: Int
+        get() = (this as? Toggle)?.subtitle?.takeIf { it != 0 } ?: description
 
     class Toggle(
         @StringRes override val title: Int,
@@ -82,7 +106,9 @@ sealed class SettingItem {
         val preview: ((LauncherPrefs, Int) -> LauncherPrefs)? = null,
         override val visibleIf: (LauncherPrefs) -> Boolean = { true },
         // The max while Labs' Big grid size options is on; null = max.
-        val bigGridMax: Int? = null
+        val bigGridMax: Int? = null,
+        // A note under the bar; null = none.
+        val note: ((LauncherPrefs) -> CharSequence?)? = null
     ) : SettingItem() {
         fun maxFor(prefs: LauncherPrefs): Int = bigGridMax?.takeIf { prefs.labsBigGrid } ?: max
     }
@@ -142,7 +168,7 @@ sealed class SettingItem {
         override val visibleIf: (LauncherPrefs) -> Boolean = { true }
     ) : SettingItem()
 
-    // The Label group: a checkbox in its row shows or hides the labels,
+    // The Label group: a switch in its row shows or hides the labels,
     // and the rest of the row opens a band under it holding their size,
     // font, shadow and single-line options. It opens and closes like an
     // Accordion (same remembered state) but holds its controls itself, so
@@ -201,5 +227,15 @@ class Choice(
     val onPick: (Int) -> Unit,
     // A colour per option, drawn as a dot before its label (a colour choice);
     // a null entry is an option with no colour of its own (Default).
-    val swatches: List<Int?>? = null
+    val swatches: List<Int?>? = null,
+    // A motion setting's live preview: the choice opens as a sheet that
+    // plays the option in force over its list (#260).
+    val preview: ChoicePreview<*>? = null
 )
+
+// What a Choice's sheet previews: its options, in the order the sheet
+// lists them.
+sealed class ChoicePreview<T>(val values: List<T>) {
+    object PageEffect : ChoicePreview<ScrollEffect>(ScrollEffect.entries)
+    object Launch : ChoicePreview<LaunchAnimation>(LaunchAnimation.entries)
+}

@@ -33,6 +33,7 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.supernova.launcher.HomeRole
 import com.supernova.launcher.R
 import com.supernova.launcher.appGraph
@@ -47,6 +48,7 @@ import com.supernova.launcher.data.Pref
 import com.supernova.launcher.data.PrefWrite
 import com.supernova.launcher.databinding.ActivityOnboardingBinding
 import com.supernova.launcher.runLogged
+import com.supernova.launcher.ui.AnimationScale
 import com.supernova.launcher.ui.LabelFont
 import com.supernova.launcher.ui.LauncherViewModel
 import com.supernova.launcher.ui.WideScreen
@@ -111,8 +113,10 @@ class OnboardingActivity : AppCompatActivity() {
     private var afterHomeRole: (() -> Unit)? = null
 
     // The backup brought its own home screen and settings: nothing is left
-    // to set up.
-    private val backup = com.supernova.launcher.ui.BackupTransfer(this, { viewModel }, onImported = ::finishOnboarding)
+    // to set up but making it the home app, as the last page would.
+    private val backup = com.supernova.launcher.ui.BackupTransfer(
+        this, { viewModel }, onImported = { askHomeRoleThen { finishOnboarding(askAnimations = false) } }
+    )
 
     private val requestHomeRole =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -686,7 +690,7 @@ class OnboardingActivity : AppCompatActivity() {
             mini.set(rows, cols)
             column.addView(mini, LinearLayout.LayoutParams(dp(GRID_W_DP), dp(GRID_H_DP)))
             column.addView(TextView(this).apply {
-                text = getString(R.string.onboarding_grid_size, cols, rows)
+                text = getString(R.string.onboarding_grid_size, rows, cols)
                 setTextColor(getColor(R.color.onboardingSummary))
                 textSize = SMALL_SP
             }, tiles.wrap().apply { topMargin = dp(OnboardingTiles.GAP_DP) })
@@ -764,9 +768,15 @@ class OnboardingActivity : AppCompatActivity() {
         }
     }
 
-    private fun finishOnboarding() {
+    // askAnimations: false once answered, and for a restored backup, which
+    // brings its own animation setting.
+    private fun finishOnboarding(askAnimations: Boolean = true) {
         if (isRerun) {
             finish()
+            return
+        }
+        if (askAnimations && AnimationScale.systemAnimationsOff(this)) {
+            askAnimationsThen { finishOnboarding(askAnimations = false) }
             return
         }
         lifecycleScope.launch {
@@ -782,6 +792,23 @@ class OnboardingActivity : AppCompatActivity() {
             }
             finish()
         }
+    }
+
+    // The phone's animations are off. From here on the launcher's own follow
+    // only its Disable animations switch, so the first run asks once which
+    // way that starts.
+    private fun askAnimationsThen(then: () -> Unit) {
+        val answer = { off: Boolean ->
+            viewModel.setAll(listOf(PrefWrite(Pref.disableAnimations, off)))
+            then()
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.onboarding_animations_title)
+            .setMessage(R.string.onboarding_animations_message)
+            .setPositiveButton(R.string.onboarding_animations_keep) { _, _ -> answer(false) }
+            .setNegativeButton(R.string.onboarding_animations_off) { _, _ -> answer(true) }
+            .setCancelable(false)
+            .show()
     }
 
     private fun night(): Boolean = ThemeEngine.isNight(this, prefs)

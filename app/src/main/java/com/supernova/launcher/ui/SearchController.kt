@@ -71,7 +71,11 @@ class SearchController(
     // screen.
     private val onAppLongPress: (View, LaunchableApp) -> Unit = { _, _ -> },
     private val onShortcutLongPress: (View, SearchResult.Shortcut) -> Unit = { _, _ -> },
-    private val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> }
+    private val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> },
+    // The private space's row: its name while the phone has one, and its
+    // icon. onOpenFolder opens it.
+    private val privateSpaceLabel: () -> String? = { null },
+    private val privateSpaceIcon: () -> android.graphics.drawable.Drawable? = { null }
 ) {
 
     private var overlay: ViewSearchOverlayBinding? = null
@@ -224,6 +228,9 @@ class SearchController(
         onShown(!windowMode())
         showZeroState()
         loadRecentQueries()
+        // From the top, where Recent searches sit, whatever was scrolled to
+        // last time.
+        ui.searchResults.scrollToPosition(0)
         ui.root.visibility = View.VISIBLE
         ui.root.animate().cancel()
         val backdrop = binding.searchBackdrop
@@ -356,6 +363,19 @@ class SearchController(
         )
         overlaySurface = surface
 
+        // A finger drag on the results takes the keyboard down, as in the
+        // drawer, so the whole list can be read.
+        ui.searchResults.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: androidx.recyclerview.widget.RecyclerView, newState: Int) {
+                if (newState == androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_DRAGGING &&
+                    ui.searchInput.hasFocus()
+                ) {
+                    ui.searchInput.clearFocus()
+                    imm()?.hideSoftInputFromWindow(ui.searchInput.windowToken, 0)
+                }
+            }
+        })
+
         ui.searchInput.doAfterTextChanged { text ->
             if (suppressQueryEvents) return@doAfterTextChanged
             val query = text?.toString().orEmpty()
@@ -378,9 +398,10 @@ class SearchController(
             MathSearchProvider(),
             appProvider,
             com.supernova.launcher.search.FolderSearchProvider(folderHits, folderIcon),
+            com.supernova.launcher.search.PrivateSpaceSearchProvider(privateSpaceLabel, privateSpaceIcon),
             com.supernova.launcher.search.CardSearchProvider { viewModel.feedCards() },
             WebSearchProvider(
-                provider = { viewModel.state.value.prefs.searchWebProvider },
+                provider = { com.supernova.launcher.search.WebEngine.of(viewModel.state.value.prefs) },
                 chips = { SearchChip.decode(viewModel.state.value.prefs.searchChips) }
             )
         )
@@ -541,8 +562,8 @@ class SearchController(
                 surface.dismiss()
             }
             else -> {
-                val provider = viewModel.state.value.prefs.searchWebProvider
-                if (onOpenUri(provider.searchUrl(query), null)) surface.dismiss()
+                val engine = com.supernova.launcher.search.WebEngine.of(viewModel.state.value.prefs)
+                if (onOpenUri(engine.searchUrl(query), null)) surface.dismiss()
             }
         }
     }
@@ -610,12 +631,14 @@ class SearchController(
         val frequent = viewModel.recentApps(gridColumns())
         val shortcuts = SuggestedShortcuts.pills(viewModel)
         // Folder members live inside their folder, as in the drawer.
-        val groups = viewModel.drawerFolderGroups().filter { viewModel.drawerFolderApps(it).isNotEmpty() }
+        // A folder inside another (#229) lives inside it too.
+        val groups = viewModel.drawerFolderGroups().filter { viewModel.drawerFolderHasContent(it) }
         val inFolders = groups.filter { viewModel.leavesMainList(it) }.flatMapTo(HashSet()) { it.members }
-        val folders = groups.map { group ->
+        val shown = groups.filterNot { com.supernova.launcher.data.TabFolders.keyOf(it.id) in inFolders }
+        val folders = shown.map { group ->
             SearchResult.Folder(
-                itemId = null, groupName = group.name, label = group.name,
-                icon = folderIcon(com.supernova.launcher.search.FolderSearchProvider.Hit(null, group.name, group.name))
+                itemId = null, groupId = group.id, label = group.name,
+                icon = folderIcon(com.supernova.launcher.search.FolderSearchProvider.Hit(null, group.id, group.name))
             )
         }
         val allApps = com.supernova.launcher.data.LabelOrder.sorted(

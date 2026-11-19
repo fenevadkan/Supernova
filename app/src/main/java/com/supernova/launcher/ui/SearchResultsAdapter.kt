@@ -157,7 +157,7 @@ class SearchResultsAdapter(
         is Row.Result -> when (val result = row.result) {
             is SearchResult.Calculation -> "calc"
             is SearchResult.Card -> "card/${result.card.id}"
-            is SearchResult.Folder -> "folder/${result.itemId}/${result.groupName}"
+            is SearchResult.Folder -> "folder/${result.itemId}/${result.groupId}"
             is SearchResult.Shortcut -> "shortcut/${result.userSerial}/${result.packageName}/${result.shortcutId}"
             is SearchResult.Contact -> "contact/${result.contactId}"
             is SearchResult.App -> "app/${result.app.userSerial}/${result.app.packageName}/${result.app.className}"
@@ -514,8 +514,18 @@ class SearchResultsAdapter(
         private val binding: ItemSearchCalcBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(result: SearchResult.Calculation) {
+            // On the cards' colours, as the top hit is: the theme's text
+            // could vanish on a restyled panel.
+            // Until a style is applied the layout's own colours stand.
             binding.calcExpression.text = result.expression
             binding.calcResult.text = result.display
+            if (cardTextColor != 0) {
+                (binding.root.background?.mutate() as? android.graphics.drawable.GradientDrawable)?.setColor(cardColor)
+                binding.calcExpression.setTextColor(
+                    androidx.core.graphics.ColorUtils.setAlphaComponent(cardTextColor, CALC_EXPRESSION_ALPHA)
+                )
+                binding.calcResult.setTextColor(cardTextColor)
+            }
             binding.root.setOnClickListener { callbacks.onCopyCalculation(result.display) }
         }
     }
@@ -604,7 +614,7 @@ class SearchResultsAdapter(
             binding.resultIcon.setImageResource(R.drawable.ic_search)
             tintIcon()
             binding.resultLabel.text =
-                binding.root.context.getString(R.string.search_web_for, web.provider.displayName, web.query)
+                binding.root.context.getString(R.string.search_web_for, web.provider.name, web.query)
             binding.root.setOnClickListener { callbacks.onWeb(web) }
         }
 
@@ -617,12 +627,15 @@ class SearchResultsAdapter(
                 tintIcon()
             }
             binding.resultLabel.text = folder.label
-            binding.root.contentDescription =
+            binding.root.contentDescription = if (folder.privateSpace) {
+                folder.label
+            } else {
                 binding.root.context.getString(R.string.folder_desc, folder.label)
+            }
             binding.root.setOnClickListener { callbacks.onFolder(folder) }
             // A drawer folder is a drawer icon: its menu, and a drag home.
             // A home-screen folder is already on the home screen.
-            if (folder.groupName != null) {
+            if (folder.groupId != null) {
                 binding.root.setOnLongClickListener {
                     callbacks.onFolderLongPress(it, folder)
                     true
@@ -741,5 +754,7 @@ class SearchResultsAdapter(
         const val TYPE_SHORTCUTS = 9
         const val TYPE_DIVIDER = 10
         const val TYPE_RECENT_HEADER = 11
+        // The calculator's expression, a step back from its result.
+        const val CALC_EXPRESSION_ALPHA = 0xB3
     }
 }

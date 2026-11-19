@@ -36,18 +36,21 @@ sealed class SearchResult {
         val phoneNumber: String? = null
     ) : SearchResult()
     // A launcher folder (workspace item or drawer folder-group); exactly one
-    // of itemId / groupName is set. The icon is resolved at match time.
+    // of itemId / groupId is set. The icon is resolved at match time.
+    // privateSpace: neither is set, and the row opens the private space's
+    // card (PrivateSpaceSearchProvider).
     data class Folder(
         val itemId: String?,
-        val groupName: String?,
+        val groupId: String?,
         val label: String,
-        val icon: android.graphics.drawable.Drawable?
+        val icon: android.graphics.drawable.Drawable?,
+        val privateSpace: Boolean = false
     ) : SearchResult()
 
     // A custom card matched by name; rendered as the full card.
     data class Card(val card: com.supernova.launcher.feed.FeedCard) : SearchResult()
 
-    data class Web(val query: String, val provider: WebProvider) : SearchResult()
+    data class Web(val query: String, val provider: WebEngine) : SearchResult()
     data class ProviderChips(val query: String) : SearchResult()
 
     companion object {

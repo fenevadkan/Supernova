@@ -11,6 +11,7 @@ import com.supernova.launcher.ui.LabelFont
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
+import com.supernova.launcher.ui.NavBarButtons
 import com.supernova.launcher.ui.StatusBarIcons
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import kotlinx.serialization.json.Json
@@ -80,7 +81,7 @@ class BackupRoundTripTest {
         pageIndicatorColor = "#FF1E88E5",
         showScrims = true,
         wallpaperZoom = false,
-        autoAddApps = true,
+        autoAddApps = false,
         labelFont = LabelFont.SERIF,
         labelConfig = """{"dock":{"size":10},"folder":{"shadow":true}}""",
         labelSingleLine = false,
@@ -121,6 +122,7 @@ class BackupRoundTripTest {
         launchAnimation = LaunchAnimation.SLIDE_UP,
         hideStatusBar = true,
         darkStatusIcons = StatusBarIcons.LIGHT,
+        navBarButtons = NavBarButtons.DARK,
         transparentNav = false,
         homeRotation = true,
         homeOrientation = "LANDSCAPE",
@@ -268,7 +270,7 @@ class BackupRoundTripTest {
         assertEquals(false, decoded.prefs.themedIcons)
         assertEquals(false, decoded.prefs.folderBadges)
         assertEquals(LockMethod.ACCESSIBILITY, decoded.prefs.lockMethod)
-        assertEquals(com.supernova.launcher.ui.AnimationSpeed.DEFAULT, decoded.prefs.animationSpeed)
+        assertEquals(com.supernova.launcher.ui.AnimationSpeed.RELAXED, decoded.prefs.animationSpeed)
         assertEquals(0, decoded.prefs.dockPaddingH)
         assertEquals(0, decoded.prefs.drawerPaddingH)
         assertEquals(0, decoded.prefs.drawerPaddingV)

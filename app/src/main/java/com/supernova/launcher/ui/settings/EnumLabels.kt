@@ -24,6 +24,7 @@ import com.supernova.launcher.ui.AnimationSpeed
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupExtraRow
 import com.supernova.launcher.ui.ScrollEffect
+import com.supernova.launcher.ui.NavBarButtons
 import com.supernova.launcher.ui.StatusBarIcons
 import com.supernova.launcher.ui.WallpaperScrollMode
 import com.supernova.launcher.data.IconGlass
@@ -83,10 +84,8 @@ object EnumLabels {
 
     @StringRes
     fun of(speed: AnimationSpeed): Int = when (speed) {
-        AnimationSpeed.SLOW -> R.string.anim_speed_slow
-        AnimationSpeed.DEFAULT -> R.string.anim_speed_default
+        AnimationSpeed.RELAXED -> R.string.anim_speed_relaxed
         AnimationSpeed.FAST -> R.string.anim_speed_fast
-        AnimationSpeed.FASTER -> R.string.anim_speed_faster
     }
 
     @StringRes
@@ -106,8 +105,18 @@ object EnumLabels {
     @StringRes
     fun of(icons: StatusBarIcons): Int = when (icons) {
         StatusBarIcons.AUTO -> R.string.status_icons_auto
+        StatusBarIcons.WALLPAPER -> R.string.status_icons_wallpaper
         StatusBarIcons.LIGHT -> R.string.status_icons_dark
         StatusBarIcons.DARK -> R.string.status_icons_light
+    }
+
+    @StringRes
+    fun of(buttons: NavBarButtons): Int = when (buttons) {
+        NavBarButtons.STATUS_BAR -> R.string.nav_buttons_status_bar
+        NavBarButtons.AUTO -> R.string.status_icons_auto
+        NavBarButtons.WALLPAPER -> R.string.status_icons_wallpaper
+        NavBarButtons.LIGHT -> R.string.status_icons_dark
+        NavBarButtons.DARK -> R.string.status_icons_light
     }
 
     @StringRes
@@ -377,6 +386,7 @@ object EnumLabels {
         SearchBarPlacement.DOCK_ABOVE -> R.string.search_bar_above_dock
         SearchBarPlacement.DOCK_BELOW -> R.string.search_bar_below_dock
         SearchBarPlacement.PERSISTENT -> R.string.search_bar_persistent
+        SearchBarPlacement.TOP -> R.string.search_bar_top
         SearchBarPlacement.WIDGET -> R.string.search_bar_widget
     }
 

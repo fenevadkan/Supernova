@@ -35,6 +35,10 @@ class AppCatalog(
     private val userManager = context.getSystemService(UserManager::class.java)
     private val pm = context.packageManager
     private val iconRenderer = IconRenderer(context)
+    private val dynamicIcons = DynamicAppIcons(
+        pm,
+        context.getSystemService(android.app.ActivityManager::class.java).launcherLargeIconDensity
+    )
     private var iconShape: IconShape = IconShape.SYSTEM
     // Decoded once per pref change; render never re-parses the JSON.
     private var customShapeSpec: CustomShapeSpec? = null
@@ -86,9 +90,11 @@ class AppCatalog(
     fun listLaunchableApps(): List<LaunchableApp> {
         val infoCache = mutableMapOf<String, LauncherActivityInfo>()
         val privateUser = privateSpaceUser()
+        val self = android.os.Process.myUserHandle()
         val apps = launcherApps.profiles.flatMap { user ->
             val serial = serialFor(user)
             val isPrivate = user == privateUser
+            val isWork = user != self && !isPrivate && isWorkUser(user)
             // A locked private space shows nothing anywhere, search included.
             if (isPrivate && userManager.isQuietModeEnabled(user)) return@flatMap emptyList()
             launcherApps.getActivityList(null, user).map { info ->
@@ -100,7 +106,8 @@ class AppCatalog(
                     label = info.label?.toString().orEmpty(),
                     userSerial = serial,
                     installTime = info.firstInstallTime,
-                    privateSpace = isPrivate
+                    privateSpace = isPrivate,
+                    work = isWork
                 )
             }
         }.let { apps -> LabelOrder.sorted(apps) { it.label } }
@@ -147,24 +154,46 @@ class AppCatalog(
     private fun appIconDrawable(name: String): Drawable? {
         val app = AppIconSource.appOf(name) ?: return null
         return userForSerial(app.userSerial)?.let { user ->
-            resolveActivity(app.packageName, app.className, user)?.getIcon(0)
+            appOwnIcon(app.packageName, app.className, user)
         }
     }
 
     // An app's icon, rendered now if it isn't cached. Whoever waits here (a
     // bind, the first run's preview) goes ahead of the background warm.
-    fun iconFor(app: LaunchableApp): Drawable? = waiters.ahead { renderIcon(app) }
+    fun iconFor(app: LaunchableApp): Drawable? = waiters.ahead { renderIcon(app, null) }
 
-    private fun renderIcon(app: LaunchableApp): Drawable? {
-        val cacheKey = "${app.userSerial}/${app.packageName}/${app.className}"
-        iconCache.get(cacheKey)?.let { return it }
+    // A placed copy's icon: with an icon of its own (LauncherItem.appEdit,
+    // see AppItemEdits) drawn from that, cached under the edit; else the
+    // app's, as the drawer draws it.
+    fun iconFor(app: LaunchableApp, itemEdit: AppOverride?): Drawable? {
+        val own = itemEdit?.takeIf { with(AppItemEdits) { it.hasIcon() } } ?: return iconFor(app)
+        return waiters.ahead { renderIcon(app, own.copy(customLabel = null, hideLabel = false)) }
+    }
+
+    // An app's icon if it is already rendered, else null: never renders, so
+    // it is safe on the main thread. The drawer binds with this and renders
+    // the misses off it (IconThread) - a launcher restarted overnight opened
+    // its first drawer with every visible icon drawn on the tap (#277).
+    fun cachedIcon(app: LaunchableApp): Drawable? = renderIcon(app, null, cachedOnly = true)
+
+    // `own` is a placed copy's icon edit, which stands in for the app's.
+    private fun renderIcon(app: LaunchableApp, own: AppOverride?, cachedOnly: Boolean = false): Drawable? {
+        val appKey = "${app.userSerial}/${app.packageName}/${app.className}"
         val user = userForSerial(app.userSerial) ?: return null
+        // An app's own date icon (#266) is cached under the day too, so the
+        // day rollover's sweep of "@cal" keys draws it afresh.
+        val dated = resolveActivity(app.packageName, app.className, user)?.let(dynamicIcons::has) == true
+        val baseKey = if (own == null) appKey else "$appKey#${own.hashCode()}"
+        val cacheKey = if (dated) "$baseKey@cal${today()}" else baseKey
+        // A pack's calendar icon lives under its own day key.
+        if (cachedOnly) return iconCache.get(cacheKey) ?: iconCache.get("$cacheKey@cal${today()}")
+        iconCache.get(cacheKey)?.let { return it }
 
         synchronized(renderLock) {
             // A pre-warm may have rendered it while we waited for the lock.
             iconCache.get(cacheKey)?.let { return it }
 
-            val override = overrides[cacheKey]
+            val override = own ?: overrides[appKey]
             val variant = override?.iconVariant
 
             // Dynamic calendar icons: an isolated day-keyed cache entry, so the
@@ -176,13 +205,13 @@ class AppCatalog(
             // not on the iconback and cut by the mask meant for unthemed ones.
             val iconEdited = override?.iconBase64 != null || override?.iconDrawableName != null || variant != null
             if (!iconEdited && iconPacks.hasCalendar(app.packageName, app.className)) {
-                val day = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
-                val calKey = "$cacheKey@cal$day"
+                val day = today()
+                val calKey = if (dated) cacheKey else "$cacheKey@cal$day"
                 iconCache.get(calKey)?.let { return it }
                 val calendar = iconPacks.calendarDrawable(app.packageName, app.className, day)
                 if (calendar != null) {
                     val rendered = runLogged("render calendar icon") {
-                        iconRenderer.render(calendar, null, shapeFor(override), customShapeSpec, IconGlass.OFF)
+                        iconRenderer.renderPackArt(calendar, shapeFor(override), customShapeSpec)
                     }.getOrNull()
                     if (rendered != null) {
                         val badged = runLogged("badge icon for its profile") {
@@ -195,7 +224,7 @@ class AppCatalog(
             }
 
             val rendered = drawEdited(app, user, override) ?: return null
-            dominantColorOf(IconRenderer.bitmapOf(rendered))?.let { dominantColors[cacheKey] = it }
+            if (own == null) dominantColorOf(IconRenderer.bitmapOf(rendered))?.let { dominantColors[baseKey] = it }
             val icon = runLogged("badge icon for its profile") {
                 pm.getUserBadgedIcon(rendered, user)
             }.getOrNull() ?: return null
@@ -258,12 +287,12 @@ class AppCatalog(
             ownIcon = pickedAppIcon && mono == null
         } else if (variant == "ORIGINAL") {
             // The app's own icon with no pack plate and no shape clip.
-            source = resolveActivity(app.packageName, app.className, user)?.getIcon(0) ?: return null
+            source = appOwnIcon(app.packageName, app.className, user) ?: return null
             decoration = null
         } else if (variant == "THEMED") {
             // Force the system monochrome look for just this app.
             val mono = monochromeThemedIcon(app.packageName, app.className, user, force = true)
-            source = mono ?: resolveActivity(app.packageName, app.className, user)?.getIcon(0) ?: return null
+            source = mono ?: appOwnIcon(app.packageName, app.className, user) ?: return null
             decoration = if (mono == null) iconPacks.decoration(packComponent) else null
         } else {
             // A themed icon from the active pack already looks final; only
@@ -272,7 +301,7 @@ class AppCatalog(
             // Pack theming wins; else the system monochrome layer when the
             // themed-icons pref is on; else the raw icon with pack plate.
             val mono = if (themed == null) monochromeThemedIcon(app.packageName, app.className, user) else null
-            source = themed ?: mono ?: resolveActivity(app.packageName, app.className, user)?.getIcon(0)
+            source = themed ?: mono ?: appOwnIcon(app.packageName, app.className, user)
                 ?: return null
             decoration = if (themed == null && mono == null) iconPacks.decoration(packComponent) else null
             finishedArt = themed != null
@@ -285,6 +314,7 @@ class AppCatalog(
             when {
                 gallery != null -> pickedPicture(gallery.bitmap, effectiveShape)
                 ownIcon -> iconRenderer.renderOwnIcon(source, effectiveShape, customShapeSpec, glass)
+                finishedArt -> iconRenderer.renderPackArt(source, effectiveShape, customShapeSpec)
                 else -> iconRenderer.render(source, decoration, effectiveShape, customShapeSpec, glass)
             }
         }.getOrNull()
@@ -349,7 +379,7 @@ class AppCatalog(
     fun warmIcons(apps: List<LaunchableApp>) {
         for (app in apps) {
             waiters.stepAside()
-            renderIcon(app)
+            renderIcon(app, null)
         }
     }
 
@@ -424,7 +454,16 @@ class AppCatalog(
         className: String,
         user: UserHandle,
         force: Boolean = false
-    ): Drawable? = resolveActivity(packageName, className, user)?.getIcon(0)?.let { themedIcon(it, force) }
+    ): Drawable? = appOwnIcon(packageName, className, user)?.let { themedIcon(it, force) }
+
+    // The icon an app ships for its launcher entry: today's date icon for
+    // one that has them (Google Calendar), else its launcher icon.
+    private fun appOwnIcon(packageName: String, className: String, user: UserHandle): Drawable? {
+        val info = resolveActivity(packageName, className, user) ?: return null
+        return dynamicIcons.forDay(info, today()) ?: info.getIcon(0)
+    }
+
+    private fun today(): Int = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
 
     // An icon's themed look (API 33+), when Themed icons is on or `force`
     // asks for it; null when it is left as it is. Autogen (D8): one that
@@ -528,6 +567,9 @@ class AppCatalog(
 
     fun listPackDrawables(packPackage: String): List<String> = iconPacks.listDrawables(packPackage)
 
+    fun packMatches(packPackage: String, packageName: String, className: String): List<String> =
+        iconPacks.matchesFor(packPackage, packageName, className)
+
     // A pack drawable pushed through the normal pipeline so it matches the
     // global shape; used for custom folder icons.
     fun renderPackDrawable(packPackage: String, drawableName: String): Drawable? {
@@ -536,7 +578,7 @@ class AppCatalog(
             renderPickedAppIcon(source)
         } else {
             runLogged("render pack drawable") {
-                iconRenderer.render(source, null, iconShape, customShapeSpec, IconGlass.OFF)
+                iconRenderer.renderPackArt(source, iconShape, customShapeSpec)
             }.getOrNull()
         }
     }
@@ -722,8 +764,21 @@ class AppCatalog(
     }
 
     private fun workUsers(): List<UserHandle> = runCatching {
-        WorkProfiles.workUsers(launcherApps.profiles, android.os.Process.myUserHandle(), privateSpaceUser())
+        val self = android.os.Process.myUserHandle()
+        WorkProfiles.workUsers(launcherApps.profiles, self, privateSpaceUser(), ::isWorkUser)
     }.getOrDefault(emptyList())
+
+    // A managed profile, not a clone one (dual apps). Android 15 on says
+    // which; before it, the user id tells the OEM clones apart (a
+    // UserHandle's hash is its user id).
+    private fun isWorkUser(user: UserHandle): Boolean {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            runCatching { launcherApps.getLauncherUserInfo(user)?.userType }.getOrNull()
+        } else {
+            null
+        }
+        return WorkProfiles.isWork(type, user.hashCode())
+    }
 
     private fun isPaused(user: UserHandle): Boolean =
         runCatching { userManager.isQuietModeEnabled(user) }.getOrDefault(false)
@@ -823,6 +878,7 @@ class AppCatalog(
         packageNames.forEach { packageName ->
             val marker = "/$packageName/"
             activityInfoByKey = activityInfoByKey.filterKeys { !it.contains(marker) }
+            dynamicIcons.forget(packageName)
             iconCache.snapshot().keys.filter { it.contains(marker) }.forEach(iconCache::remove)
             dominantColors.keys.filter { it.contains(marker) }.forEach(dominantColors::remove)
             // An app wearing this app's icon (picked in Edit) draws it afresh too.
@@ -833,6 +889,8 @@ class AppCatalog(
                 iconCache.remove(key)
                 dominantColors.remove(key)
             }
+            // So may a placed copy with an icon of its own: few, so all of them.
+            iconCache.snapshot().keys.filter { '#' in it }.forEach(iconCache::remove)
         }
     }
 

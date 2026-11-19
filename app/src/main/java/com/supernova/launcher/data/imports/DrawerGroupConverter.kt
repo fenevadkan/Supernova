@@ -5,9 +5,10 @@ import com.supernova.launcher.data.DrawerGroupType
 import com.supernova.launcher.data.TabFolders
 
 // Another launcher's drawer tabs and folders as Supernova's drawer groups:
-// each holding the apps of its own that are on this phone, a tab holding
-// its folders as it holds apps. A folder left with no app is left out; a
-// tab stays, as one made empty would.
+// each holding the apps of its own that are on this phone, a tab or a
+// folder holding its folders as it holds apps. A folder left with no app,
+// itself or in a folder inside it, is left out; a tab stays, as one made
+// empty would.
 internal object DrawerGroupConverter {
 
     // The stored groups with the backup's in place: one of the same name is
@@ -24,31 +25,55 @@ internal object DrawerGroupConverter {
 
     fun convert(groups: List<ForeignGroup>, phone: LayoutConverter.Phone): List<DrawerGroup> {
         val apps = groups.associate { group -> group.id to group.apps.mapNotNull { key(it, phone) }.distinct() }
-        val folders = ordered(groups.filter { it.folder && apps[it.id].orEmpty().isNotEmpty() })
+        val byId = groups.filter { it.folder }.associateBy { it.id }
+        val folders = ordered(groups.filter { it.folder && hasApps(it, byId, apps) })
         val tabs = ordered(groups.filterNot { it.folder })
-        val names = Names()
-        val folderNames = folders.associate { it.id to names.take(it.title, FOLDER) }
+        // Each group under an id of its own: names may repeat, as there.
+        val folderIds = folders.associate { it.id to DrawerGroup.newId() }
         val madeFolders = folders.mapIndexed { order, folder ->
             DrawerGroup(
-                name = folderNames.getValue(folder.id),
-                members = apps[folder.id].orEmpty().toSet(),
+                name = name(folder.title, FOLDER),
+                members = (apps[folder.id].orEmpty() + held(folder, folderIds)).toSet(),
                 order = order,
                 type = DrawerGroupType.FOLDER,
                 keepInMain = folder.keepInMain,
-                iconBase64 = folder.icon?.let(phone.encodeIcon)
+                iconBase64 = folder.icon?.let(phone.encodeIcon),
+                id = folderIds.getValue(folder.id)
             )
         }
         val madeTabs = tabs.mapIndexed { order, tab ->
-            val held = tab.folders.mapNotNull { folderNames[it] }.map(TabFolders::keyOf)
             DrawerGroup(
-                name = names.take(tab.title, TAB),
-                members = (apps[tab.id].orEmpty() + held).toSet(),
+                name = name(tab.title, TAB),
+                members = (apps[tab.id].orEmpty() + held(tab, folderIds)).toSet(),
                 order = order,
                 type = DrawerGroupType.TAB,
-                keepInMain = tab.keepInMain
+                keepInMain = tab.keepInMain,
+                id = DrawerGroup.newId()
             )
         }
         return madeFolders + madeTabs
+    }
+
+    // The member keys of the kept folders a group holds; never its own.
+    private fun held(group: ForeignGroup, folderIds: Map<Long, String>): List<String> =
+        group.folders.filter { it != group.id }.mapNotNull { folderIds[it] }.map(TabFolders::keyOf)
+
+    // Whether a folder has an app on this phone, itself or in a folder
+    // inside it; a loop of folders ends where it comes round.
+    private fun hasApps(
+        folder: ForeignGroup,
+        folders: Map<Long, ForeignGroup>,
+        apps: Map<Long, List<String>>
+    ): Boolean {
+        val seen = mutableSetOf<Long>()
+        val pending = ArrayDeque(listOf(folder))
+        while (pending.isNotEmpty()) {
+            val next = pending.removeFirst()
+            if (!seen.add(next.id)) continue
+            if (apps[next.id].orEmpty().isNotEmpty()) return true
+            pending.addAll(next.folders.mapNotNull { folders[it] })
+        }
+        return false
     }
 
     // The launcher's order, ties as the backup lists them.
@@ -64,19 +89,8 @@ internal object DrawerGroupConverter {
         return key?.takeIf { k -> k.none { it == ',' || it == '|' } }
     }
 
-    // Group names, unique as Supernova keeps them: no '|', never blank, a
-    // second of a name numbered.
-    private class Names {
-        private val taken = HashSet<String>()
-
-        fun take(title: String, fallback: String): String {
-            val base = title.replace('|', '/').trim().ifEmpty { fallback }
-            val name = generateSequence(1) { it + 1 }.map { if (it == 1) base else "$base $it" }
-                .first { it.lowercase() !in taken }
-            taken += name.lowercase()
-            return name
-        }
-    }
+    // A group's name: no '|' (the storage separator), never blank.
+    private fun name(title: String, fallback: String): String = title.replace('|', '/').trim().ifEmpty { fallback }
 
     private const val FOLDER = "Folder"
     private const val TAB = "Tab"

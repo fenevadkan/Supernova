@@ -184,7 +184,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:background="@null"
-                        android:hint="@string/search_apps"
+                        android:hint="@string/drawer_search_hint"
                         android:imeOptions="actionSearch|flagNoExtractUi|flagNoFullscreen"
                         android:importantForAutofill="no"
                         android:inputType="text"
@@ -205,7 +205,7 @@
             android:visibility="gone"
             app:tabGravity="start"
             app:tabIndicator="@drawable/tab_indicator_drawer"
-            app:tabIndicatorColor="@color/accent"
+            app:tabIndicatorColor="?attr/colorAccent"
             app:tabIndicatorFullWidth="false"
             app:tabIndicatorHeight="3dp"
             app:tabMinWidth="48dp"
@@ -302,7 +302,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:paddingBottom="@dimen/space_ml"
-                android:scrollbars="vertical" />
+                android:scrollbars="none" />
 
             <!-- Paged drawer style only: real page views, so the page effect
                  and the wrap-around work the way the workspace pager's do. -->
@@ -538,6 +538,16 @@
             android:textColor="@color/textPrimary"
             android:textColorHint="@color/textSecondary"
             android:textSize="@dimen/text_body" />
+
+        <!-- A search that found nothing says so. -->
+        <TextView
+            android:id="@+id/editWidgetNoMatches"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/space_md"
+            android:textColor="@color/textSecondary"
+            android:textSize="@dimen/text_body"
+            android:visibility="gone" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/editWidgetRecycler"

@@ -18,9 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-// The per-app Edit sheet: rename, hide label, per-app shape, custom icon from
-// any installed pack or a gallery photo. Saves one AppOverride keyed by app
-// identity.
+// The Edit sheet for an app: rename, hide label, shape, style and a custom
+// icon from any installed pack or a gallery photo. From the drawer it saves
+// the app's AppOverride, keyed by app identity; for an app placed on the home
+// screen, the dock or in a folder it saves that copy's own (AppItemEdits).
 object AppEditSheet {
 
     // A placed shortcut - a pinned app shortcut, a picked activity - edits
@@ -56,7 +57,9 @@ object AppEditSheet {
         shortcut: ShortcutEdit? = null,
         // Opened from the drawer: the sheet also lists the drawer tabs and
         // folders to put the app in.
-        fromDrawer: Boolean = false
+        fromDrawer: Boolean = false,
+        // A placed copy of `app`: the edit is that copy's own.
+        placed: com.supernova.launcher.data.LauncherItem? = null
     ) {
         if (app == null && shortcut == null) return
         val binding = SheetAppEditBinding.inflate(LayoutInflater.from(context))
@@ -64,7 +67,7 @@ object AppEditSheet {
         dialog.setContentView(binding.root)
 
         val rawLabel = shortcut?.label ?: app?.let(viewModel::rawLabelOf).orEmpty()
-        val current = shortcut?.edit ?: app?.let(viewModel::overrideFor) ?: AppOverride()
+        val current = shortcut?.edit ?: openingEdit(viewModel, app, placed, rawLabel)
 
         dressForPreview(context, dialog, binding)
         if (viewModel.state.value.prefs.labsShowComponent && app != null && shortcut == null) {
@@ -85,7 +88,7 @@ object AppEditSheet {
         val draft = AppEditDraft(binding, scope, viewModel, defaultLabel, saved = current)
         draft.preview = shortcut?.preview ?: app?.let { a -> { edit -> viewModel.appCatalog().previewIcon(a, edit) } }
         draft.bind()
-        bindIconRow(scope, viewModel, draft, pickPhoto)
+        bindIconRow(scope, viewModel, draft, pickPhoto, app)
 
         if (swipeLabels != null && onEditSwipe != null) {
             // Track the labels locally: the picker commits asynchronously, so
@@ -130,12 +133,12 @@ object AppEditSheet {
         // Reset undoes the icon and name edits, not the groups: those are
         // where the app lives, as Select apps sets them.
         binding.resetButton.setOnClickListener {
-            viewModel.setAppOverride(app) { AppOverride() }
+            save(viewModel, app, placed, null)
             dialog.dismiss()
         }
 
         binding.saveButton.setOnClickListener {
-            viewModel.setAppOverride(app) { draft.edit() }
+            save(viewModel, app, placed, draft.edit())
             groups?.save()
             dialog.dismiss()
         }
@@ -173,6 +176,34 @@ object AppEditSheet {
 
     private const val HOME_FADE_MS = 150L
 
+    // A placed copy's edit is its own; the drawer's is the app's. Null resets.
+    private fun save(
+        viewModel: LauncherViewModel,
+        app: LaunchableApp,
+        placed: com.supernova.launcher.data.LauncherItem?,
+        edit: AppOverride?
+    ) {
+        if (placed != null) {
+            viewModel.setItemAppEdit(placed, app, edit)
+        } else {
+            viewModel.setAppOverride(app) { edit ?: AppOverride() }
+        }
+    }
+
+    // An app's edit as its Edit opens. A placed copy's: its own name (the
+    // one it was placed with, when that isn't the app's), its hidden label,
+    // and its own icon or the drawer's. Else the drawer's.
+    private fun openingEdit(
+        viewModel: LauncherViewModel,
+        app: LaunchableApp?,
+        item: com.supernova.launcher.data.LauncherItem?,
+        rawLabel: String
+    ): AppOverride {
+        if (item == null) return app?.let(viewModel::overrideFor) ?: AppOverride()
+        val shown = viewModel.overrideFor(item) ?: AppOverride()
+        return shown.copy(customLabel = shown.customLabel ?: item.label.takeIf { it.isNotEmpty() && it != rawLabel })
+    }
+
     // One row for the icon, wherever it comes from: Default, another app's
     // icon, a photo or an icon pack. A pick lands in the draft, and the
     // preview shows it at once.
@@ -180,7 +211,9 @@ object AppEditSheet {
         scope: CoroutineScope,
         viewModel: LauncherViewModel,
         draft: AppEditDraft,
-        pickPhoto: PhotoPicker?
+        pickPhoto: PhotoPicker?,
+        // The app behind the item: a pack's own icons for it lead its grid.
+        app: LaunchableApp?
     ) {
         val context = draft.binding.root.context
         draft.binding.iconRow.setOnClickListener {
@@ -207,7 +240,9 @@ object AppEditSheet {
                     }
                 }
             }
-            IconPickerSheet.show(context, scope, viewModel, allowDefault = true, onPickPhoto = onPhoto) { pack, name ->
+            IconPickerSheet.show(
+                context, scope, viewModel, onPickPhoto = onPhoto, forApp = app
+            ) { pack, name ->
                 draft.pack = pack
                 draft.icon = name
                 // A pack icon (or a reset to default) replaces any photo.
@@ -225,28 +260,38 @@ typealias PhotoPicker = (fromFiles: Boolean, onPicked: (android.net.Uri?) -> Uni
 // sources: Default, every installed app's own icon, a photo, each icon pack.
 object IconPickerSheet {
 
+    // Three callers, each passing only what it has; the optional pair has defaults.
+    @Suppress("LongParameterList")
     fun show(
         context: Context,
         scope: CoroutineScope,
         viewModel: LauncherViewModel,
-        allowDefault: Boolean = false,
         // When set, photo entries (gallery, files) hand the source back.
         onPickPhoto: ((fromFiles: Boolean) -> Unit)? = null,
+        // The app being edited, if any: each pack's grid opens with that
+        // pack's own icons for it.
+        forApp: LaunchableApp? = null,
+        // A folder's apps (#255): their own icons lead the App icons grid,
+        // and their pack icons lead each pack's grid.
+        folderApps: List<LaunchableApp> = emptyList(),
         onPick: (pack: String?, name: String?) -> Unit
     ) {
+        val leaders = forApp?.let(::listOf) ?: folderApps
         scope.launch {
             val packs = viewModel.availableIconPacks()
             // Each entry pairs its label with the action tapping it runs.
             // App icons come first after Default: the built-in source.
             val entries = buildList<Pair<String, () -> Unit>> {
-                if (allowDefault) add(context.getString(R.string.option_default) to { onPick(null, null) })
-                add(context.getString(R.string.icon_source_apps) to { showAppGrid(context, viewModel, onPick) })
+                add(context.getString(R.string.option_default) to { onPick(null, null) })
+                add(
+                    context.getString(R.string.icon_source_apps) to { showAppGrid(context, viewModel, leaders, onPick) }
+                )
                 if (onPickPhoto != null) {
                     add(context.getString(R.string.photo_from_gallery) to { onPickPhoto(false) })
                     add(context.getString(R.string.photo_from_files) to { onPickPhoto(true) })
                 }
                 packs.forEach { pack ->
-                    add(pack.label to { showGrid(context, scope, viewModel, pack.packageName, onPick) })
+                    add(pack.label to { scope.showGrid(context, viewModel, pack.packageName, leaders, onPick) })
                 }
             }
             MaterialAlertDialogBuilder(context)
@@ -257,30 +302,50 @@ object IconPickerSheet {
         }
     }
 
-    private fun showGrid(
+    private fun CoroutineScope.showGrid(
         context: Context,
-        scope: CoroutineScope,
         viewModel: LauncherViewModel,
         packPackage: String,
+        leaders: List<LaunchableApp>,
         onPick: (String?, String?) -> Unit
     ) {
-        scope.launch {
+        launch {
             val names = viewModel.packDrawableNames(packPackage)
-            if (names.isEmpty()) {
+            val matches = withContext(Dispatchers.Default) {
+                leaders.flatMap { app ->
+                    viewModel.appCatalog().packMatches(packPackage, app.packageName, app.className)
+                }.distinct()
+            }
+            if (names.isEmpty() && matches.isEmpty()) {
                 Toast.makeText(context, R.string.no_icons_in_pack, Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            showIconGrid(context, viewModel, IconGrid(packPackage, names), onPick)
+            val featured = matches.takeIf { it.isNotEmpty() }?.let {
+                Featured(leaders.singleOrNull()?.label, it)
+            }
+            showIconGrid(context, viewModel, IconGrid(packPackage, names, featured = featured), onPick)
         }
     }
 
     // Every installed app's own icon, A-Z by the app's name, unlabelled
     // (a long press names one). A work profile's copy of an app looks
     // the same, so each app shows once; private space apps stay off the
-    // home screen, so they aren't offered.
-    private fun showAppGrid(context: Context, viewModel: LauncherViewModel, onPick: (String?, String?) -> Unit) {
+    // home screen, so they aren't offered. A folder's apps lead, in the
+    // folder's order (#255).
+    private fun showAppGrid(
+        context: Context,
+        viewModel: LauncherViewModel,
+        leaders: List<LaunchableApp>,
+        onPick: (String?, String?) -> Unit
+    ) {
         val apps = appChoices(viewModel)
-        val grid = IconGrid(AppIconSource.PACK, apps.map(AppIconSource::nameFor), apps.map { it.label })
+        val lead = leaders.filterNot { it.privateSpace }.distinctBy { "${it.packageName}/${it.className}" }
+        val featured = lead.takeIf { it.isNotEmpty() }?.let {
+            Featured(it.singleOrNull()?.label, it.map(AppIconSource::nameFor))
+        }
+        val grid = IconGrid(
+            AppIconSource.PACK, apps.map(AppIconSource::nameFor), apps.map { it.label }, featured
+        )
         showIconGrid(context, viewModel, grid, onPick)
     }
 
@@ -304,8 +369,41 @@ object IconPickerSheet {
         val packPackage: String,
         val names: List<String>,
         // Read out and shown on a long press; null for a pack's drawables.
-        val labels: List<String>? = null
+        val labels: List<String>? = null,
+        // The pack's own icons for the app being edited, on their own row(s)
+        // above the whole pack.
+        val featured: Featured? = null
     )
+
+    // `appLabel` keeps the row through a search for the app's name: packs
+    // rarely name a drawable after the app ("Gmail" is not "gmail" in many).
+    // A folder's row (no one app's name) shows only with no search.
+    private class Featured(val appLabel: String?, val names: List<String>)
+
+    // What the grid shows: one icon (its index into IconGrid.names, or -1
+    // for a featured icon outside that list's order), or an empty gap that
+    // fills the rest of a row.
+    private sealed interface Cell {
+        data class Icon(val name: String, val index: Int) : Cell
+        data class Gap(val span: Int) : Cell
+    }
+
+    // The grid's cells for the indices a search kept. With something
+    // featured, and no search or one for the app's name: the app's own
+    // icons, then the rest from the start of the next row.
+    private fun cells(grid: IconGrid, indices: List<Int>, query: String): List<Cell> {
+        val all = indices.map { Cell.Icon(grid.names[it], it) }
+        val featured = grid.featured?.takeIf {
+            val label = it.appLabel
+            query.isBlank() || (label != null && IconSearch.words(label).contains(IconSearch.words(query)))
+        } ?: return all
+        return buildList {
+            featured.names.forEach { add(Cell.Icon(it, -1)) }
+            val rest = featured.names.size % GRID_COLUMNS
+            if (rest != 0 && all.isNotEmpty()) add(Cell.Gap(GRID_COLUMNS - rest))
+            addAll(all)
+        }
+    }
 
     private fun showIconGrid(
         context: Context,
@@ -316,16 +414,23 @@ object IconPickerSheet {
         val binding = SheetIconPickerBinding.inflate(LayoutInflater.from(context))
         val dialog = com.supernova.launcher.ui.Sheets.open(context)
         dialog.setContentView(binding.root)
-        binding.iconGrid.layoutManager = androidx.recyclerview.widget.GridLayoutManager(context, GRID_COLUMNS)
         val adapter = IconChoiceAdapter(viewModel, grid) { name ->
             onPick(grid.packPackage, name)
             dialog.dismiss()
+        }
+        adapter.show(cells(grid, grid.names.indices.toList(), query = ""))
+        binding.iconGrid.layoutManager = androidx.recyclerview.widget.GridLayoutManager(context, GRID_COLUMNS).apply {
+            spanSizeLookup = object : androidx.recyclerview.widget.GridLayoutManager.SpanSizeLookup() {
+                override fun getSpanSize(position: Int): Int = adapter.spanAt(position)
+            }
         }
         binding.iconGrid.adapter = adapter
         // Filters as you type; a scan of names only, so a pack of
         // thousands keeps up. The sheet sits above the keyboard.
         binding.iconSearch.doAfterTextChanged { text ->
-            adapter.show(IconSearch.filter(grid.names, grid.labels, text?.toString().orEmpty()))
+            val query = text?.toString().orEmpty()
+            val kept = IconSearch.filter(grid.names, grid.labels, query)
+            adapter.show(cells(grid, kept, query))
             binding.iconGrid.scrollToPosition(0)
         }
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -340,37 +445,49 @@ object IconPickerSheet {
         private val onPick: (String) -> Unit
     ) : androidx.recyclerview.widget.RecyclerView.Adapter<IconChoiceAdapter.Holder>() {
 
-        class Holder(val view: android.widget.ImageView) :
+        class Holder(val view: android.view.View) :
             androidx.recyclerview.widget.RecyclerView.ViewHolder(view)
 
-        override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): Holder {
-            val view = LayoutInflater.from(parent.context)
-                .inflate(R.layout.item_icon_choice, parent, false) as android.widget.ImageView
-            return Holder(view)
-        }
-
-        // Grid indices on show: all of them, or a search's matches.
-        private var shown: List<Int> = grid.names.indices.toList()
+        // The cells on show: titles and icons, or a search's matches.
+        private var shown: List<Cell> = emptyList()
 
         @android.annotation.SuppressLint("NotifyDataSetChanged")
-        fun show(indices: List<Int>) {
-            shown = indices
+        fun show(cells: List<Cell>) {
+            shown = cells
             notifyDataSetChanged()
+        }
+
+        fun spanAt(position: Int): Int = (shown.getOrNull(position) as? Cell.Gap)?.span ?: 1
+
+        override fun getItemViewType(position: Int): Int = if (shown[position] is Cell.Gap) TYPE_GAP else TYPE_ICON
+
+        override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): Holder {
+            if (viewType == TYPE_GAP) return Holder(android.view.View(parent.context))
+            return Holder(LayoutInflater.from(parent.context).inflate(R.layout.item_icon_choice, parent, false))
         }
 
         override fun getItemCount(): Int = shown.size
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
-            val index = shown[position]
-            val name = grid.names[index]
+            when (val cell = shown[position]) {
+                is Cell.Gap -> Unit
+                is Cell.Icon -> bindIcon(holder.view as android.widget.ImageView, cell)
+            }
+        }
+
+        private fun bindIcon(view: android.widget.ImageView, cell: Cell.Icon) {
             // Lazy per-bind decode: the RecyclerView only materializes what
             // scrolls into view, so a 3,000-icon pack stays tractable.
-            holder.view.setImageDrawable(viewModel.appCatalog().packDrawable(grid.packPackage, name))
-            grid.labels?.getOrNull(index)?.let { label ->
-                holder.view.contentDescription = label
-                holder.view.tooltipText = label
-            }
-            holder.view.setOnClickListener { onPick(name) }
+            view.setImageDrawable(viewModel.appCatalog().packDrawable(grid.packPackage, cell.name))
+            val label = grid.labels?.getOrNull(cell.index)
+            view.contentDescription = label ?: view.context.getString(R.string.app_icon)
+            view.tooltipText = label
+            view.setOnClickListener { onPick(cell.name) }
+        }
+
+        private companion object {
+            const val TYPE_ICON = 0
+            const val TYPE_GAP = 1
         }
     }
 }

@@ -26,9 +26,41 @@ object PermissionPrompts {
         MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.notification_access_title)
             .setMessage(message)
-            .setPositiveButton(R.string.open_settings) { _, _ -> openNotificationAccess(activity) }
+            .setPositiveButton(R.string.open_settings) { _, _ -> openNotificationAccessWithHelp(activity) }
             .setNegativeButton(R.string.not_now, null)
             .show()
+    }
+
+    // Android 13+ greys the switch out for apps installed outside the Play
+    // Store until "Allow restricted settings" is ticked on the app info page.
+    // For such installs, say so first and offer the app info page.
+    fun openNotificationAccessWithHelp(activity: Activity) {
+        if (!mayBeRestricted(activity)) {
+            openNotificationAccess(activity)
+            return
+        }
+        MaterialAlertDialogBuilder(activity)
+            .setTitle(R.string.notification_access_title)
+            .setMessage(R.string.notification_access_restricted)
+            .setPositiveButton(R.string.open_settings) { _, _ -> openNotificationAccess(activity) }
+            .setNeutralButton(R.string.app_info) { _, _ ->
+                runLogged("open app info") {
+                    activity.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                            .setData(android.net.Uri.fromParts("package", activity.packageName, null)),
+                    )
+                }
+            }
+            .setNegativeButton(R.string.not_now, null)
+            .show()
+    }
+
+    private fun mayBeRestricted(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        val installer = runCatching {
+            context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+        }.getOrNull()
+        return installer != "com.android.vending"
     }
 
     // Supernova's own entry where the system has one (API 30+), else the list.
@@ -48,17 +80,48 @@ object PermissionPrompts {
         }
     }
 
+    // A runtime permission asked for from a card. Once Android has stopped
+    // showing its dialog (denied twice), asking again would do nothing, so
+    // the app's info page opens instead, where it can still be allowed.
+    fun askRuntime(activity: Activity, permission: String, ask: () -> Unit) {
+        val granted = activity.checkSelfPermission(permission) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        val asked = activity.getSharedPreferences(ASKED_PREFS, Context.MODE_PRIVATE)
+        if (!granted && asked.getBoolean(permission, false) &&
+            !activity.shouldShowRequestPermissionRationale(permission)
+        ) {
+            android.widget.Toast.makeText(activity, R.string.permission_in_app_info, android.widget.Toast.LENGTH_LONG)
+                .show()
+            runLogged("open app info") {
+                activity.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(android.net.Uri.fromParts("package", activity.packageName, null)),
+                )
+            }
+            return
+        }
+        asked.edit().putBoolean(permission, true).apply()
+        ask()
+    }
+
+    private const val ASKED_PREFS = "permission_asks"
+
+    // The disclosure store policy asks for before the system screen: what
+    // the service does and doesn't do, and an explicit Agree. Every way into
+    // the accessibility settings goes through here while the service is off.
     fun explainAccessibility(activity: Activity) {
         MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.accessibility_needed_title)
             .setMessage(R.string.accessibility_needed_message)
-            .setPositiveButton(R.string.open_settings) { _, _ ->
-                runLogged("open accessibility settings") {
-                    activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
-            }
-            .setNegativeButton(R.string.not_now, null)
+            .setPositiveButton(R.string.accessibility_agree) { _, _ -> openAccessibilitySettings(activity) }
+            .setNegativeButton(R.string.accessibility_decline, null)
             .show()
+    }
+
+    fun openAccessibilitySettings(activity: Activity) {
+        runLogged("open accessibility settings") {
+            activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
     }
 
     // A gesture is bound to something only the accessibility service can do.
