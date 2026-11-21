@@ -64,6 +64,9 @@ object SettingsCatalogue {
         // Every plain single-choice setting: the catalogue builds the Choice
         // (its values, labels and setter) and the activity only shows it.
         val pickChoice: (Choice) -> Unit = {},
+        // Any color and its opacity (ColorSheet): the setting's title, its
+        // stored value ("" = Default), Default's color, and the write.
+        val pickColor: (Int, String, Int, (String) -> Unit) -> Unit = { _, _, _, _ -> },
         val pickIconPack: () -> Unit = {},
         val pickIconShape: () -> Unit = {},
         val resetCustomIcons: () -> Unit = {},
@@ -172,29 +175,22 @@ object SettingsCatalogue {
             visibleIf = visibleIf
         )
 
-        // Curated swatches for v1; a free hex picker arrives with theming. An
-        // unknown stored color (from a backup) reads as Default.
-        // The row shows the colour in force, its dot and its name.
+        // Any color and opacity, in the color sheet the folder plate and the
+        // style surfaces use (it had nine fixed colors). The row shows the
+        // color in force, its dot and its name: a curated one by name, any
+        // other by hex. `default` is Default's color in the sheet.
         fun color(
             @StringRes title: Int,
             current: (LauncherPrefs) -> String,
-            subtitle: (LauncherPrefs) -> CharSequence? = { context.getString(curatedFor(current(it)).first) },
-            visibleIf: (LauncherPrefs) -> Boolean = { true },
+            subtitle: (LauncherPrefs) -> CharSequence? = {
+                colorLabel(context, current(it), android.graphics.Color.WHITE)
+            },
+            default: Int = android.graphics.Color.WHITE,
             onPick: (String) -> Unit
         ): SettingItem.Row = SettingItem.Row(
             title,
             subtitle = subtitle,
-            onClick = {
-                val now = current(viewModel.state.value.prefs)
-                actions.pickChoice(
-                    Choice(
-                        title, CURATED_COLORS.map { context.getString(it.first) },
-                        CURATED_COLORS.indexOf(curatedFor(now)), { onPick(CURATED_COLORS[it].second) },
-                        swatches = CURATED_COLORS.map { swatchOf(it.second) }
-                    )
-                )
-            },
-            visibleIf = visibleIf,
+            onClick = { actions.pickColor(title, current(viewModel.state.value.prefs), default, onPick) },
             look = SettingItem.RowLook(swatch = { swatchOf(current(it)) })
         )
 
@@ -313,8 +309,21 @@ object SettingsCatalogue {
         dependsOn(R.string.icon_glass, IconGlass.fromName(SearchBarPrefs.drawerBar(it).glass) != IconGlass.OFF)
     }
 
-    private fun curatedFor(stored: String): Pair<Int, String> =
-        CURATED_COLORS.firstOrNull { it.second.equals(stored, ignoreCase = true) } ?: CURATED_COLORS.first()
+    // A stored color's name: Default, a curated color by name, any other by
+    // hex, with its opacity when it isn't solid ("Red, 50%", "#3F51B5").
+    fun colorLabel(context: Context, stored: String, default: Int): String {
+        if (stored.isEmpty()) return context.getString(R.string.color_default)
+        val color = com.supernova.launcher.ui.LabelStyler.parseColor(stored, default)
+        val rgb = color or OPAQUE
+        val named = CURATED_COLORS.firstOrNull { it.second.isNotEmpty() && it.second.toColorInt() == rgb }
+        val name = named?.let { context.getString(it.first) }
+            ?: String.format(java.util.Locale.ROOT, "#%06X", rgb and RGB)
+        val opacity = ColorSheet.percent(color)
+        return if (color == rgb) name else context.getString(R.string.color_with_opacity, name, opacity)
+    }
+
+    private const val OPAQUE = 0xFF000000.toInt()
+    private const val RGB = 0xFFFFFF
 
     // Its dot; none for Default.
     private fun swatchOf(hex: String): Int? =
@@ -757,8 +766,8 @@ object SettingsCatalogue {
                     set = { viewModel.set(Pref.drawerSortButtons, it) },
                     subtitle = R.string.drawer_sort_buttons_summary
                 ),
-                rows.choice(
-                    R.string.drawer_transition, com.supernova.launcher.ui.DrawerTransition.entries,
+                motionRows.choice(
+                    R.string.drawer_transition, ChoicePreview.Drawer,
                     { it.drawerTransition }, { EnumLabels.of(it) }
                 ) { viewModel.set(Pref.drawerTransition, it) }.blockedWhen(animationsOff),
                 SettingItem.Row(
@@ -846,7 +855,8 @@ object SettingsCatalogue {
                     step = 2,
                     get = { it.drawerPaddingH },
                     set = { viewModel.set(Pref.drawerPaddingH, it) },
-                    display = { context.getString(R.string.padding_dp_value, it) }
+                    display = { context.getString(R.string.padding_dp_value, it) },
+                    preview = { p, v -> p.copy(drawerPaddingH = v) }
                 ),
                 SettingItem.Slider(
                     R.string.drawer_padding_v,
@@ -1370,7 +1380,8 @@ object SettingsCatalogue {
                     step = 5,
                     get = { (it.folderIconScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.folderIconScale, it / 100f) },
-                    display = { context.getString(R.string.opacity_percent, it) }
+                    display = { context.getString(R.string.opacity_percent, it) },
+                    preview = { p, v -> p.copy(folderIconScale = v / 100f) }
                 ).hiddenWhen { needsOff(R.string.dock_match_desktop, it.folderMatchDesktop) }.nested(),
                 SettingItem.Toggle(
                     R.string.folder_labels,
@@ -1417,7 +1428,16 @@ object SettingsCatalogue {
                             ).encode()
                         )
                     },
-                    display = { context.getString(R.string.padding_dp_value, it) }
+                    display = { context.getString(R.string.padding_dp_value, it) },
+                    preview = { p, v ->
+                        val config = com.supernova.launcher.ui.theme.StyleConfig.decode(p.styleConfig)
+                        val folder = com.supernova.launcher.ui.theme.SurfaceId.FOLDER
+                        p.copy(
+                            styleConfig = config.with(
+                                folder, config.styleFor(folder).copy(cornerRadii = List(4) { v.toFloat() })
+                            ).encode()
+                        )
+                    }
                 ),
                 rows.choice(
                     R.string.folder_mode, FolderMode.entries,
@@ -1577,9 +1597,12 @@ object SettingsCatalogue {
                         if (prefs.badgeColor.isBlank() && BadgeStyle.effective(prefs) == BadgeStyle.DOTS) {
                             context.getString(R.string.badge_color_icon)
                         } else {
-                            context.getString(curatedFor(prefs.badgeColor).first)
+                            colorLabel(
+                                context, prefs.badgeColor, com.supernova.launcher.ui.BadgeDrawable.DEFAULT_BADGE_COLOR
+                            )
                         }
-                    }
+                    },
+                    default = com.supernova.launcher.ui.BadgeDrawable.DEFAULT_BADGE_COLOR
                 ) { viewModel.set(Pref.badgeColor, it) }.hiddenWhen {
                     badgesHidden(it)
                         ?: dependsOn(R.string.badge_style, BadgeStyle.effective(it) == BadgeStyle.DYNAMIC)
@@ -1612,13 +1635,20 @@ object SettingsCatalogue {
                     R.string.badge_position, BadgePosition.entries,
                     { it.badgePosition }, { EnumLabels.of(it) }
                 ) { viewModel.set(Pref.badgePosition, it) }.hiddenWhen(badgesHidden),
+                SettingItem.Toggle(
+                    R.string.badge_on_corner,
+                    get = { it.badgeOnCorner },
+                    set = { viewModel.set(Pref.badgeOnCorner, it) },
+                    subtitle = R.string.badge_on_corner_summary
+                ).hiddenWhen(badgesHidden),
                 SettingItem.Slider(
                     R.string.badge_size,
                     min = 60, max = 160,
                     step = 5,
                     get = { (it.badgeScale * 100f).roundToInt() },
                     set = { viewModel.set(Pref.badgeScale, it / 100f) },
-                    display = { context.getString(R.string.opacity_percent, it) }
+                    display = { context.getString(R.string.opacity_percent, it) },
+                    preview = { p, v -> p.copy(badgeScale = v / 100f) }
                 ).hiddenWhen(badgesHidden),
                 // Test notification badge: a badge to look at without
                 // waiting for a message.
@@ -1751,6 +1781,12 @@ object SettingsCatalogue {
                     val action = HomeButtonAction.effective(it.homeButtonAction, it.homeSearch)
                     dependsOn(R.string.home_button_action, action == GestureAction.NONE)
                 },
+                SettingItem.Toggle(
+                    R.string.home_return_default_page,
+                    get = { it.homeReturnToDefaultPage },
+                    set = { viewModel.set(Pref.homeReturnToDefaultPage, it) },
+                    subtitle = R.string.home_return_default_page_summary
+                ),
                 SettingItem.Header(R.string.action_lock_screen),
                 SettingItem.Row(
                     R.string.lock_method,
@@ -1823,9 +1859,11 @@ object SettingsCatalogue {
                     R.string.about_version,
                     subtitle = { SupernovaApp.versionLabel(context) },
                     onClick = {},
-                    // Information only: no ripple, no chevron.
+                    // Information only: no chevron, and a tap does nothing.
                     look = SettingItem.RowLook(tappable = false)
-                ),
+                    // The version and the phone's details on the clipboard,
+                    // for a report started on GitHub (#279).
+                ).onLongPress { AboutLinks.copyDeviceDetails(context) },
                 SettingItem.Row(
                     R.string.about_whats_new,
                     subtitle = { context.getString(R.string.about_whats_new_summary) },

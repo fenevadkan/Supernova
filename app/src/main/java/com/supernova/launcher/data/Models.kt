@@ -348,6 +348,8 @@ data class LauncherPrefs(
     val badgeCornerRadius: Int = BadgeLimits.CORNER_ROUND,
     // A thin dark ring around every badge (Outline).
     val badgeOutline: Boolean = true,
+    // The badge centred near the icon's corner, half outside it (#250).
+    val badgeOnCorner: Boolean = false,
     val folderPreviewStyle: FolderPreviewStyle = FolderPreviewStyle.GRID,
     // Draw the first member large in the preview, remaining members small.
     val folderPrioritizeFirst: Boolean = false,
@@ -468,6 +470,9 @@ data class LauncherPrefs(
     // runs the action (the behavior before this pref existed). Off runs the
     // action straight away, wherever the workspace was.
     val homeButtonOnMainPage: Boolean = true,
+    // On (the default): Home from an app, from recents or the screen turning
+    // off goes to the default page. Off keeps the page the user left (#317).
+    val homeReturnToDefaultPage: Boolean = true,
     // Desktop/drawer search bar configuration as one JSON document (see
     // ui/SearchBarConfig); "" = defaults (no desktop bar, local drawer filter).
     val searchBarConfig: String = "",
@@ -691,6 +696,8 @@ data class BackupPayload(
     val prefs: LauncherPrefs
 )
 
+// Serializable for AppListCache, the drawer's list kept between runs.
+@Serializable
 data class LaunchableApp(
     val packageName: String,
     val className: String,

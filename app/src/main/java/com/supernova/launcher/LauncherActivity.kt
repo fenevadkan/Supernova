@@ -354,6 +354,10 @@ class LauncherActivity :
     // the time onNewIntent runs - the Lifecycle state is STARTED either way,
     // because the temporary pause has already been dispatched.
     private var startedSinceResume = false
+
+    // When the launcher's window last gained focus (uptime ms): a home press
+    // only counts as made on the home screen once it has held focus a moment.
+    private var focusGainedAt = 0L
     private var appliedScrollEffect: ScrollEffect? = null
 
     // X of the last touch-down, in window coordinates - dispatchTouchEvent
@@ -652,6 +656,8 @@ class LauncherActivity :
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        liveLaunchers.removeAll { it.get() == null }
+        liveLaunchers += java.lang.ref.WeakReference(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         viewModel.onDisplayDensity(resources.displayMetrics.densityDpi)
         appliedAccent = viewModel.state.value.prefs.accentColor
@@ -683,7 +689,9 @@ class LauncherActivity :
                 // Feed before drawer: the pane overlays the workspace, so back
                 // must close it before it can ever reach the (hidden) drawer.
                 ::feed.isInitialized && feed.isOpen -> feed.close()
-                ::drawer.isInitialized && drawer.isExpanded -> drawer.hide()
+                // A query typed in the drawer goes first: the full list
+                // comes back, and the next Back closes the drawer.
+                ::drawer.isInitialized && drawer.isExpanded -> if (!drawer.clearQuery()) drawer.hide()
                 else -> Unit
             }
         }
@@ -848,8 +856,15 @@ class LauncherActivity :
                 carries(item)
             }
 
-        workspaceAdapter.invalidatePagesWith(::affected)
-        if (viewModel.dockItems().any(::affected)) {
+        // Redrawn in place: the icon's view stays, with a press on it.
+        val pages = binding.workspacePager.getChildAt(0) as? androidx.recyclerview.widget.RecyclerView
+        if (pages != null) {
+            workspaceAdapter.redrawItemsWith(pages, ::affected, ::redrawItemView)
+        } else {
+            workspaceAdapter.invalidatePagesWith(::affected)
+        }
+        val dockHits = viewModel.dockItems().filter(::affected)
+        if (dockHits.isNotEmpty() && !redrawDockItems(dockHits)) {
             renderDock(viewModel.state.value, force = true)
         }
         drawer.onBadgeChanged()
@@ -865,6 +880,14 @@ class LauncherActivity :
     // on every launcher create, so pressing Home mid-wizard isn't a trap: it
     // simply re-opens next launch.
     private fun maybeShowOnboarding() {
+        if (startedAsHome()) {
+            // The first run that just made this the home app finishes from
+            // here, rather than this opening a second; the launcher it was
+            // opened over goes once its writes are in.
+            val handover = com.supernova.launcher.onboarding.OnboardingHomeHandover
+            if (handover.finishForHome(this, ::closeOtherLaunchers)) return
+            closeOtherLaunchers()
+        }
         lifecycleScope.launch {
             if (!viewModel.onboardingDone()) {
                 val predates = viewModel.hasModelItems() && !viewModel.defaultLayoutSeeded()
@@ -879,6 +902,19 @@ class LauncherActivity :
             }
             maybePromptDefaultHome()
         }
+    }
+
+    private fun startedAsHome(): Boolean = intent?.hasCategory(Intent.CATEGORY_HOME) == true
+
+    // Opened from another launcher's icon, this runs in an ordinary task;
+    // once it becomes the home app, the system starts the home screen in a
+    // task of its own, and the first copy stayed alive behind it, with its
+    // own view model, for as long as the process lived. The home copy closes
+    // it as it starts.
+    private fun closeOtherLaunchers() {
+        liveLaunchers.mapNotNull { it.get() }
+            .filter { it !== this && !it.isFinishing && !it.startedAsHome() }
+            .forEach { it.finishAndRemoveTask() }
     }
 
     private fun maybePromptDefaultHome() {
@@ -915,6 +951,7 @@ class LauncherActivity :
         }
 
     override fun onDestroy() {
+        liveLaunchers.removeAll { it.get() == null || it.get() === this }
         // A recreate (a theme flip, an accent change) can come with the feed
         // showing; its media and calendar listeners are registered with the
         // system and would keep this activity alive for good.
@@ -940,7 +977,10 @@ class LauncherActivity :
 
     private fun redrawForNewDay() {
         iconsDrawnFor = java.time.LocalDate.now()
-        viewModel.appCatalog().onDayChanged()
+        // Only date icons change with the day. Without any, there is
+        // nothing to redraw: this rebound every page on the morning's first
+        // return home.
+        if (!viewModel.appCatalog().onDayChanged()) return
         workspaceAdapter.invalidateAll()
         // onDayChanged evicts the calendar icons without touching the
         // prefs, the model or the icon generation, so the dock's
@@ -949,19 +989,22 @@ class LauncherActivity :
         drawer.notifyContentChanged()
     }
 
-    // Screen off: put the home screen back to its default page with everything
-    // closed, so unlocking lands on the home screen rather than on whatever was
-    // open when the screen went dark, as Launcher3 does.
+    // Screen off: close everything over the home screen, so unlocking lands on
+    // the home screen rather than on whatever was open when the screen went
+    // dark, as Launcher3 does. The page stays where it was (#317), unless
+    // Return to default page is on.
     private val screenOffReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: Intent) {
             privateSpaceCard.cancelPending()
-            resetToHome(animate = false, keepDrawer = drawerKeptBehindLaunch)
+            val keepPage = !viewModel.state.value.prefs.homeReturnToDefaultPage
+            resetToHome(animate = false, keepDrawer = drawerKeptBehindLaunch, keepPage = keepPage)
             if (drawerKeptBehindLaunch && ::drawer.isInitialized) drawer.resetPosition()
         }
     }
 
     override fun onStart() {
         super.onStart()
+        MainStallWatch.start()
         startedSinceResume = true
         widgets.startListening()
         val filter = android.content.IntentFilter().apply {
@@ -983,6 +1026,7 @@ class LauncherActivity :
         if (!viewModel.state.value.prefs.dockRememberPosition) showMainDockPage(animate = false)
         widgets.stopListening()
         runCatching { unregisterReceiver(dateChangeReceiver) }
+        MainStallWatch.stop()
         super.onStop()
     }
 
@@ -1021,16 +1065,7 @@ class LauncherActivity :
         if (::drag.isInitialized && drag.routeGesture(ev, window = null)) return true
         // An active drawer pull owns the stream until the finger lifts; it
         // runs before the visibility gate below, which the pull itself trips.
-        if (drawerPullActive) {
-            drawerPullVelocity?.addMovement(ev)
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_MOVE -> drawer.pullTo(drawerPullDownY - ev.y)
-                MotionEvent.ACTION_UP -> finishDrawerPull(cancelled = false)
-                MotionEvent.ACTION_CANCEL -> finishDrawerPull(cancelled = true)
-                else -> Unit
-            }
-            return true
-        }
+        if (drawerPullActive) return continueDrawerPull(ev)
         // Edit mode offers Resize too: a drag on that frame's edge is the frame's,
         // unless the press is on what edit mode puts over the page.
         val framedInEditMode = ::editMode.isInitialized && editMode.isOpen && !editMode.pressOnChrome(ev)
@@ -1038,7 +1073,7 @@ class LauncherActivity :
         // isVisible, not isExpanded: the sheet leaves EXPANDED the moment a
         // closing swipe starts, and the still-observing gesture detector
         // would read that swipe as the home swipe-down binding.
-        if ((::drawer.isInitialized && drawer.isVisible) ||
+        if ((::drawer.isInitialized && drawer.isVisible && !drawer.isClosing) ||
             (::search.isInitialized && search.isOpen) ||
             // Edit mode: sheet drags and chip taps must not read as gestures.
             (::editMode.isInitialized && editMode.isOpen) ||
@@ -1074,6 +1109,7 @@ class LauncherActivity :
             // dock swipes stay out of it like they do for drawer/search.
             if (feed.isOpen) return super.dispatchTouchEvent(ev)
         }
+        if (heldBySwipe(ev)) return true
         // A widget scrolling its own content owns the vertical stream. The
         // detector observes without consuming, so otherwise a drag inside a
         // list widget also read as the home swipe-up/down binding and fired
@@ -1092,11 +1128,67 @@ class LauncherActivity :
             cancel.recycle()
             return true
         }
-        // Gestures observe every event but never consume them, so drags,
-        // page swipes and icon taps keep working underneath.
+        // Gestures observe every event without consuming it, so drags, page
+        // swipes and icon taps keep working underneath - until a swipe up or
+        // down runs mid-stream: the views are cancelled and it takes the rest.
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) gestureDetector.moveSwipesAllowed = !inGestureStrip(ev)
         gestureDetector.onTouchEvent(ev)
+        if (gestureDetector.takeSwipedMidStream()) return takeStreamForSwipe(ev)
         trackDockSwipe(ev)
         return super.dispatchTouchEvent(ev)
+    }
+
+    // The drawer pull's stream, from the move that started it to the lift.
+    private fun continueDrawerPull(ev: MotionEvent): Boolean {
+        drawerPullVelocity?.addMovement(ev)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_MOVE -> drawer.pullTo(drawerPullDownY - ev.y)
+            MotionEvent.ACTION_UP -> finishDrawerPull(cancelled = false)
+            MotionEvent.ACTION_CANCEL -> finishDrawerPull(cancelled = true)
+            else -> Unit
+        }
+        return true
+    }
+
+    // A home swipe ran mid-stream: the views under the finger are cancelled
+    // and the rest of the stream is held from them (heldBySwipe).
+    private fun takeStreamForSwipe(ev: MotionEvent): Boolean {
+        swipeOwnsStream = true
+        val cancel = MotionEvent.obtain(ev)
+        cancel.action = MotionEvent.ACTION_CANCEL
+        super.dispatchTouchEvent(cancel)
+        gestureDetector.onTouchEvent(cancel)
+        cancel.recycle()
+        return true
+    }
+
+    // Set while a home swipe that ran mid-stream owns the rest of it.
+    private var swipeOwnsStream = false
+
+    // The rest of a stream a home swipe ran in is the swipe's: true to drop
+    // the event. A new press also finishes a nearly settled page first.
+    private fun heldBySwipe(ev: MotionEvent): Boolean {
+        val held = swipeOwnsStream && ev.actionMasked != MotionEvent.ACTION_DOWN
+        if (!held || ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            swipeOwnsStream = false
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) finishPageSettleForPress()
+        return held
+    }
+
+    // A press while a page swipe is still settling: the pager would take it
+    // as a new drag, so a tap on an icon as the page came to rest did
+    // nothing. Close to rest, the page is put there and the press is a
+    // press, as Launcher3 does.
+    private fun finishPageSettleForPress() {
+        val pager = binding.workspacePager
+        val pages = pager.getChildAt(0) as? androidx.recyclerview.widget.RecyclerView
+        val nearRest = pages != null &&
+            pager.scrollState == androidx.viewpager2.widget.ViewPager2.SCROLL_STATE_SETTLING &&
+            abs(pages.computeHorizontalScrollOffset() - pager.currentItem * pages.width) <= dp(SETTLE_TAP_THROUGH_DP)
+        if (!nearRest) return
+        pages?.stopScroll()
+        pager.setCurrentItem(pager.currentItem, false)
     }
 
     // A quick horizontal flick across the dock switches dock pages. Observed,
@@ -1107,7 +1199,7 @@ class LauncherActivity :
     private fun trackDrawerPull(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                drawerPullArmed = drawerPullAllowed()
+                drawerPullArmed = drawerPullAllowed(ev)
                 if (drawerPullArmed) {
                     drawerPullDownX = ev.x
                     drawerPullDownY = ev.y
@@ -1198,8 +1290,21 @@ class LauncherActivity :
         return false
     }
 
-    private fun drawerPullAllowed(): Boolean {
-        if (!::drawer.isInitialized || drawer.isVisible) return false
+    // A press in the bottom strip where the system always takes a swipe
+    // (gesture navigation's home bar); never with button navigation.
+    private fun inGestureStrip(ev: MotionEvent): Boolean {
+        val inset = ViewCompat.getRootWindowInsets(binding.root)
+            ?.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())?.bottom ?: 0
+        return inset > 0 && ev.y >= binding.root.height - inset
+    }
+
+    private fun drawerPullAllowed(ev: MotionEvent): Boolean {
+        if (!::drawer.isInitialized || (drawer.isVisible && !drawer.isClosing)) return false
+        // A press in the system's own gesture strip (gesture navigation's
+        // home swipe) is the system's: the pull it started was cancelled a
+        // moment later, and the sheet closing again swallowed the Home press
+        // that followed.
+        if (inGestureStrip(ev)) return false
         if (::feed.isInitialized && feed.isOpen) return false
         if (::search.isInitialized && search.isOpen) return false
         if (::editMode.isInitialized && editMode.isOpen) return false
@@ -1356,16 +1461,14 @@ class LauncherActivity :
         val token = binding.root.windowToken ?: return
         val pages = workspaceAdapter.realPageCount
         val offset = mode.offset(scrollPosition, pages)
-        runLogged("set wallpaper offset steps") {
-            val manager = WallpaperManager.getInstance(this)
-            // Steps depend only on the page count; sending them per scroll
-            // frame was a binder call per frame.
-            if (pages != lastWallpaperPages) {
-                lastWallpaperPages = pages
-                manager.setWallpaperOffsetSteps(if (pages <= 1) 0f else 1f / (pages - 1), 0f)
-            }
-            manager.setWallpaperOffsets(token, offset, 0f)
+        // Steps depend only on the page count, so they go only when it moves.
+        val step = if (pages != lastWallpaperPages) {
+            lastWallpaperPages = pages
+            if (pages <= 1) 0f else 1f / (pages - 1)
+        } else {
+            null
         }
+        com.supernova.launcher.ui.WallpaperOffsets.send(this, token, offset, step)
     }
 
     private fun setupDrawer() {
@@ -1388,7 +1491,9 @@ class LauncherActivity :
                 hideDrawer()
                 search.open()
             },
-            buildFolderIcon = itemIcons::drawerFolderIcon,
+            buildFolderIcon = { group, members, onLate ->
+                itemIcons.drawerFolderIcon(group, members, onLate = onLate)
+            },
             decorateFolderIcon = itemIcons::withFolderBadge,
             onFolderClick = { view, group, members -> showDrawerFolderPopup(view, group, members) },
             onFolderLongPress = ::longPressDrawerFolder,
@@ -1964,6 +2069,7 @@ class LauncherActivity :
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) focusGainedAt = SystemClock.uptimeMillis()
         // A launched app can restore the status bar; re-hide on return.
         if (hasFocus && viewModel.state.value.prefs.hideStatusBar) {
             applyStatusBarVisibility(true)
@@ -2025,6 +2131,9 @@ class LauncherActivity :
                 // slots evenly, so padding here only narrowed the label - the
                 // reason "Chrome" used to render as "Chro".
                 setPadding(0, dp(DOCK_SLOT_PADDING_V_DP), 0, dp(DOCK_SLOT_PADDING_V_DP))
+                // A corner badge (#250) reaches past its tile.
+                clipChildren = false
+                clipToPadding = false
                 // An empty slot takes its own taps, so they don't fall
                 // through to whatever lies behind the dock.
                 isClickable = true
@@ -2040,7 +2149,7 @@ class LauncherActivity :
                 // Same as the workspace rebind: never inherit the
                 // drag-source hiding on a reused view - but an item whose
                 // drop is still settling stays hidden until it lands.
-                itemView.alpha = if (item.id == drag.settlingItemId) 0f else 1f
+                itemView.alpha = if (drag.isSettling(item.id)) 0f else 1f
                 slot.addView(
                     itemView,
                     FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -2521,29 +2630,26 @@ class LauncherActivity :
         if (target == wallpaperZoomTarget) return
         wallpaperZoomTarget = target
         wallpaperZoomAnimator?.cancel()
-        val manager = WallpaperManager.getInstance(this)
+        // Sent from a background thread (WallpaperOffsets): each is a binder
+        // call, per frame of the ramp. A service that throws stops the zoom.
+        val onFail: () -> Unit = {
+            wallpaperZoomBroken = true
+            wallpaperZoomAnimator?.cancel()
+        }
         if (!Animations.enabled(prefs)) {
             // Restore-to-0 still applies (a mid-open pref flip can't strand a
             // zoomed wallpaper), just without the ramp.
             wallpaperZoomValue = target
-            try {
-                method.invoke(manager, token, target)
-            } catch (_: Exception) {
-                wallpaperZoomBroken = true
-            }
+            com.supernova.launcher.ui.WallpaperOffsets.zoom(this, token, method, target, onFail)
             return
         }
         wallpaperZoomAnimator = android.animation.ValueAnimator.ofFloat(wallpaperZoomValue, target).apply {
             duration = Animations.duration(prefs, WALLPAPER_ZOOM_MS)
             addUpdateListener { animator ->
                 wallpaperZoomValue = animator.animatedValue as Float
-                try {
-                    method.invoke(manager, token, wallpaperZoomValue)
-                } catch (_: Exception) {
-                    // Some OEM wallpaper services throw; stop retrying.
-                    wallpaperZoomBroken = true
-                    cancel()
-                }
+                com.supernova.launcher.ui.WallpaperOffsets.zoom(
+                    this@LauncherActivity, token, method, wallpaperZoomValue, onFail
+                )
             }
             start()
         }
@@ -2588,7 +2694,8 @@ class LauncherActivity :
     // Everything the home screen can have standing over its default page:
     // menus, popups, edit mode, the page previews, a widget resize frame, the
     // feed, the drawer, search and move mode - then the page itself. Two
-    // callers: the home press, and the screen turning off.
+    // callers: the home press, and the screen turning off (which keeps the
+    // page, as does a press made in another app).
     //
     // Returns whether any of it was actually open, which the home press needs
     // to tell a press with a job to do from a second press with none.
@@ -2627,7 +2734,9 @@ class LauncherActivity :
             feed.close()
             closed = true
         }
-        if (::drawer.isInitialized && drawer.isExpanded) {
+        // A drawer already sliding shut isn't closed by this press: its Home
+        // action (open the drawer, by default) runs and turns it round.
+        if (::drawer.isInitialized && drawer.isExpanded && !drawer.isClosing) {
             closed = true
             if (!keepDrawer) hideDrawer(instant = !animate)
         }
@@ -2656,12 +2765,15 @@ class LauncherActivity :
             cards.addWidget()
             return
         }
-        // Home press re-delivers MAIN/HOME to the singleTask instance: reset to
-        // the default page with drawer and menus closed, like every launcher does.
-        // cameFromBackground separates the two presses that land here: one made
-        // on the home screen itself, and one made in another app to get back to
-        // it. Only the first is a home press "on" the launcher.
+        // Home press re-delivers MAIN/HOME to the singleTask instance: drawer
+        // and menus close. cameFromBackground separates the two presses that
+        // land here: one made on the home screen itself, and one made in another
+        // app to get back to it. Only the first is a home press "on" the
+        // launcher, and only it goes to the default page; from an app home
+        // comes back on the page the user left (#317), unless Return to
+        // default page is on.
         val cameFromBackground = startedSinceResume
+        val onHome = pressedOnHome(intent)
         val keepDrawerOpen = keepDrawerForHomePress(cameFromBackground)
         // Read before the reset moves the pager off it.
         // The dock counts too: a press on home with the dock on a side page
@@ -2680,16 +2792,22 @@ class LauncherActivity :
         val promptClosed = privateSpaceCard.cancelPending()
         // With animations off (the launcher's or the system's) home lands
         // at once instead of scrolling past every page in between (#123).
-        val scroll = Animations.scrollPages(viewModel.state.value.prefs)
+        // From another app the launcher wasn't showing: whatever it closes
+        // closes at once (#292), and the page stays put, or with Return to
+        // default page on lands on the default page at once, as Launcher3's
+        // does: scrolled, a slow return showed the pages in between (#292).
+        val keepPage = keepPageForHomePress(onHome, promptClosed)
+        val scroll = Animations.scrollPages(viewModel.state.value.prefs) && !cameFromBackground &&
+            !movesPageUnseen(onHome, keepPage)
         // A folder card the same swipe closed on its first touch (#110), read
         // after the reset, whose own closes don't count twice.
         val closed = com.supernova.launcher.ui.OpenDialogs.dismissAll(this) or
-            resetToHome(animate = scroll, keepDrawer = keepDrawerOpen, keepPage = promptClosed) or
+            resetToHome(animate = scroll, keepDrawer = keepDrawerOpen, keepPage = keepPage) or
             cardSwipeClose.takeFor(SystemClock.uptimeMillis()) or promptClosed
         // A press on the home screen itself also slides the dock back to its
         // main page. One made in another app leaves it, unless onStop already
         // put it there (Remember position off).
-        if (!cameFromBackground && !promptClosed) showMainDockPage(animate = scroll)
+        if (onHome && !promptClosed) showMainDockPage(animate = scroll)
         // The double-home action: pressing home when there was nothing to
         // close and nowhere to scroll runs the configured action instead of
         // no-opping. homeButtonAction supersedes the legacy homeSearch flag
@@ -2701,11 +2819,31 @@ class LauncherActivity :
         // closing - a drag in flight included.
         val prefs = viewModel.state.value.prefs
         val reachedHome = wasOnDefaultPage || !prefs.homeButtonOnMainPage
-        if (!cameFromBackground && reachedHome && !closed && !drag.isActive) {
+        if (onHome && reachedHome && !closed && !drag.isActive) {
             val action = HomeButtonAction.effective(prefs.homeButtonAction, prefs.homeSearch)
             if (action != GestureAction.NONE) actions.run(GestureBinding(action))
         }
     }
+
+    // A home press made on the home screen: the launcher was in front, with
+    // its window focused for a moment, and no bring to front: a swipe home from the
+    // system's recents screen sends more home intents after the launcher has
+    // resumed but before it has focus, which went to the default page and ran
+    // the home-button action (#317).
+    private fun pressedOnHome(intent: Intent): Boolean =
+        !startedSinceResume && hasWindowFocus() &&
+            SystemClock.uptimeMillis() - focusGainedAt > HOME_FOCUS_SETTLE_MS &&
+            intent.flags and Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT == 0
+
+    // Whether a home press leaves the page where it is: one that only closed
+    // the private space's unlock prompt does, and so does one made in another
+    // app unless Return to default page is on (#317).
+    private fun keepPageForHomePress(onHome: Boolean, promptClosed: Boolean): Boolean =
+        promptClosed || (!onHome && !viewModel.state.value.prefs.homeReturnToDefaultPage)
+
+    // A page change the user didn't ask for on the home screen itself (Return
+    // to default page), made at once rather than scrolled.
+    private fun movesPageUnseen(onHome: Boolean, keepPage: Boolean): Boolean = !onHome && !keepPage
 
     // Whether a home press spares the drawer. drawerAutoClose off keeps a
     // drawer that stayed open behind a launched app open on return home, when
@@ -3681,7 +3819,7 @@ class LauncherActivity :
         val name = FolderToDrawer.groupName(folder.label)
         val view = DialogMoveToDrawerBinding.inflate(layoutInflater)
         val iconSize = resources.getDimensionPixelSize(R.dimen.move_folder_icon)
-        val icon = itemIcons.folderPreviewDrawable(folder).apply { setBounds(0, 0, iconSize, iconSize) }
+        val icon = itemIcons.folderPreviewDrawable(folder)?.apply { setBounds(0, 0, iconSize, iconSize) }
         view.moveFolderSummary.setCompoundDrawablesRelative(icon, null, null, null)
         view.moveFolderSummary.text = resources.getQuantityString(R.plurals.move_to_drawer_summary, apps, name, apps)
         view.moveTabHint.text = getString(R.string.move_to_drawer_tab_hint, name)
@@ -4562,35 +4700,102 @@ class LauncherActivity :
 
     override fun state(): LauncherUiState = viewModel.state.value
 
+    // A home or dock item's icon with its badge. An app's icon, or a
+    // folder's member, still to be rendered is left out (an app's draws
+    // nothing yet), rendered on the icon thread, and `onLate` runs on the
+    // main thread once it is in. A bind used to render it right there.
+    private fun itemIcon(item: LauncherItem, onLate: () -> Unit): android.graphics.drawable.Drawable? {
+        val app = item.toLaunchableApp()
+        val shown = lastItemIcons[item.id]
+        val fresh = when (item.itemType) {
+            ItemType.FOLDER -> itemIcons.folderPreviewDrawable(item, onLate, pendingAsNull = shown != null)
+            ItemType.WIDGET -> getDrawable(R.drawable.ic_widget)
+            ItemType.APP -> if (app == null) getDrawable(R.drawable.ic_supernova) else appItemIcon(item, app, onLate)
+            ItemType.SHORTCUT -> when (val look = itemIcons.shortcutLook(item, onLate)) {
+                null -> null
+                else -> look.icon ?: app?.let { appItemIcon(item, it, onLate) } ?: getDrawable(R.drawable.ic_supernova)
+            }
+        }
+        // While a late icon renders, the item keeps the picture it last
+        // showed: a page built again blanked its icons until they came
+        // back, which read as the home screen reloading (#292).
+        return badgedItemIcon(item, fresh?.also { lastItemIcons[item.id] = it } ?: shown)
+    }
+
+    private fun badgedItemIcon(
+        item: LauncherItem,
+        icon: android.graphics.drawable.Drawable?
+    ): android.graphics.drawable.Drawable? =
+        if (item.itemType == ItemType.FOLDER) {
+            val count = itemIcons.folderBadgeCount(item)
+            if (count > 0 && icon != null) itemIcons.badgeDrawable(icon, count) else icon
+        } else {
+            itemIcons.withBadge(icon, item.packageName, item.className, item.userSerial)
+        }
+
+    // Each home and dock item's last icon (before its badge), by item id.
+    private val lastItemIcons = HashMap<String, android.graphics.drawable.Drawable>()
+
+    // An item view's icon drawn again where it is (a badge moved).
+    private fun redrawItemView(view: View, item: LauncherItem) {
+        if (item.itemType == ItemType.WIDGET) return
+        runCatching { ItemIconBinding.bind(view) }.getOrNull()?.let { redrawItemIcon(it, item) }
+    }
+
+    // The dock's views for these items redrawn in place; false when one of
+    // them isn't found, for the caller to build the dock again.
+    private fun redrawDockItems(items: List<LauncherItem>): Boolean {
+        val wanted = items.associateBy { it.id }
+        val found = HashSet<String>()
+        fun walk(view: View) {
+            wanted[view.getTag(R.id.tag_item_id)]?.let {
+                redrawItemView(view, it)
+                found += it.id
+                return
+            }
+            if (view is ViewGroup) for (index in 0 until view.childCount) walk(view.getChildAt(index))
+        }
+        walk(binding.dockBar)
+        return found.size == wanted.size
+    }
+
+    // A placed app's icon from the cache (its Large copy for a Large icon),
+    // or null with the render queued.
+    private fun appItemIcon(
+        item: LauncherItem,
+        app: LaunchableApp,
+        onLate: () -> Unit
+    ): android.graphics.drawable.Drawable? {
+        val catalog = viewModel.appCatalog()
+        val large = item.isLargeIcon
+        return catalog.cachedIcon(app, item.appEdit, large) ?: run {
+            com.supernova.launcher.data.IconThread.renderAll(
+                listOf { catalog.iconFor(app, item.appEdit, large) }, onLate
+            )
+            null
+        }
+    }
+
+    // A late icon is in: drawn on the view, if it still shows this item.
+    private fun redrawItemIcon(binding: ItemIconBinding, item: LauncherItem) {
+        if (binding.root.getTag(R.id.tag_item_id) != item.id) return
+        binding.icon.setImageDrawable(itemIcon(item) {})
+    }
+
     override fun viewForItem(item: LauncherItem): View {
         if (item.itemType == ItemType.WIDGET) {
             return widgets.buildWidgetView(item).also { itemMoves.attachWidget(it, item.id) }
         }
 
         val iconBinding = ItemIconBinding.inflate(LayoutInflater.from(this))
-        val app = item.toLaunchableApp()
-
-        val icon = when (item.itemType) {
-            ItemType.FOLDER -> itemIcons.folderPreviewDrawable(item)
-            ItemType.WIDGET -> getDrawable(R.drawable.ic_widget)
-            ItemType.APP -> app?.let { viewModel.appCatalog().iconFor(it, item.appEdit) }
-                ?: getDrawable(R.drawable.ic_supernova)
-            ItemType.SHORTCUT -> itemIcons.intentItemIcon(item)
-                ?: app?.let { viewModel.appCatalog().iconFor(it) } ?: getDrawable(R.drawable.ic_supernova)
-        }
+        // Icons not rendered yet draw in once they are, off the main thread.
+        iconBinding.icon.setImageDrawable(itemIcon(item) { redrawItemIcon(iconBinding, item) })
 
         val prefs = viewModel.state.value.prefs
         val override = viewModel.overrideFor(item)
         val inDock = item.container == ContainerType.DOCK
         val labelVisible = (if (inDock) prefs.dockLabels else prefs.showLabels) &&
             !(override?.hideLabel ?: false)
-        val badged = if (item.itemType == ItemType.FOLDER) {
-            val count = itemIcons.folderBadgeCount(item)
-            if (count > 0 && icon != null) itemIcons.badgeDrawable(icon, count) else icon
-        } else {
-            itemIcons.withBadge(icon, item.packageName, item.className, item.userSerial)
-        }
-        iconBinding.icon.setImageDrawable(badged)
         if (inDock) {
             // The dock splits a fixed width dockCount ways, so scaleX/scaleY
             // here drew outside the slot and was clipped by it. Sizing the box
@@ -4738,6 +4943,9 @@ class LauncherActivity :
         if (!claimsUp && !claimsDown) return
         var startY = 0f
         var startX = 0f
+        // The swipe ran: the rest of the stream is the icon's, so the lift
+        // can't also tap it.
+        var swiped = false
         val hold = inFolder?.let { FolderTileSwipeHold(view, claimsUp, claimsDown) }
         view.setOnTouchListener { v, event ->
             // In an open folder the grid is held off until the finger has
@@ -4747,28 +4955,38 @@ class LauncherActivity :
                 MotionEvent.ACTION_DOWN -> {
                     startY = event.rawY
                     startX = event.rawX
+                    swiped = false
                     // An open folder's window never feeds the home detector
                     // or the drawer pull.
                     if (hold == null) claimHomeSwipe(claimsUp, claimsDown)
                 }
-                MotionEvent.ACTION_UP -> {
+                // Decided as the finger crosses the home swipe's distance,
+                // not on the lift: waiting for the lift needed twice that
+                // distance, and a short flick still inside the icon read
+                // as a tap, a slow one as a long-press.
+                // The lift too, for a flick whose last move fell just short.
+                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> if (!swiped) {
                     val up = iconSwipeAt(event.rawX - startX, startY - event.rawY, claimsUp, claimsDown)
                     if (up != null) {
+                        swiped = true
                         runIconSwipe(v, event, item, up, inFolder)
-                        return@setOnTouchListener true
                     }
                 }
             }
-            false
+            swiped
         }
     }
 
     // The lift's swipe on an icon: true up, false down, null for neither.
     // dy is the finger's rise.
-    private fun iconSwipeAt(dx: Float, dy: Float, claimsUp: Boolean, claimsDown: Boolean): Boolean? = when {
-        claimsUp && dy > dp(48) && dy > abs(dx) -> true
-        claimsDown && -dy > dp(48) && -dy > abs(dx) -> false
-        else -> null
+    // The home swipes' own distance (HomeGestureDetector.minSwipeDistance).
+    private fun iconSwipeAt(dx: Float, dy: Float, claimsUp: Boolean, claimsDown: Boolean): Boolean? {
+        val min = gestureDetector.minSwipeDistance
+        return when {
+            claimsUp && dy >= min && dy > abs(dx) -> true
+            claimsDown && -dy >= min && -dy > abs(dx) -> false
+            else -> null
+        }
     }
 
     private fun claimHomeSwipe(claimsUp: Boolean, claimsDown: Boolean) {
@@ -4793,9 +5011,9 @@ class LauncherActivity :
         inFolder: (() -> Unit)?
     ) {
         val opensOnSwipe = item.itemType == ItemType.FOLDER && item.swipeToOpen
-        // The lift never reaches the icon's own handler, so its press state
-        // and pending long-press are cancelled by hand; a folder opening in
-        // place would keep the ripple.
+        // The rest of the stream never reaches the icon's own handler, so its
+        // press state and pending long-press are cancelled by hand; a folder
+        // opening in place would keep the ripple.
         val cancel = MotionEvent.obtain(event)
         cancel.action = MotionEvent.ACTION_CANCEL
         v.onTouchEvent(cancel)
@@ -5044,6 +5262,10 @@ class LauncherActivity :
     }
 
     companion object {
+        // Every live launcher activity, for closeOtherLaunchers. Main thread
+        // only.
+        private val liveLaunchers = mutableListOf<java.lang.ref.WeakReference<LauncherActivity>>()
+
         // Settings' Add card → Widget: pick and bind one onto a new feed card.
         const val EXTRA_ADD_FEED_WIDGET = "extra_add_feed_widget"
 
@@ -5054,6 +5276,9 @@ class LauncherActivity :
         // How long a folder member action waits for its change to be saved.
         private const val FOLDER_SAVE_WAIT_MS = 1_000L
         private const val PAGE_REBIND_WAIT_MS = 100L
+        // How long the window must have held focus for a home press to count
+        // as made on the home screen.
+        private const val HOME_FOCUS_SETTLE_MS = 100L
 
         // Undo snackbar lifetime after a removal.
         private const val UNDO_DURATION_MS = 4000
@@ -5062,6 +5287,8 @@ class LauncherActivity :
         private const val OVER_OVERLAYS_ELEVATION_DP = 18f
         // Above the Desktop previews scrim (24dp).
         private const val OVER_PREVIEWS_ELEVATION_DP = 26f
+        // How close to rest a settling page lets a press through as a press.
+        private const val SETTLE_TAP_THROUGH_DP = 48
 
         // The icon box and item padding item_icon declares, and the padding a
         // dock icon column keeps around it instead. Kept here because the

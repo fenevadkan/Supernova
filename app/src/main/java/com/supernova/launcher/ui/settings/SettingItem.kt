@@ -3,6 +3,7 @@ package com.supernova.launcher.ui.settings
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import com.supernova.launcher.data.LauncherPrefs
+import com.supernova.launcher.ui.DrawerTransition
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.ScrollEffect
 
@@ -125,7 +126,15 @@ sealed class SettingItem {
         val titleText: CharSequence? = null,
         val look: RowLook = RowLook()
     ) : SettingItem() {
-        fun withLook(look: RowLook): Row = Row(title, subtitle, onClick, visibleIf, titleText, look)
+        // A long press, for a row that also offers it (About's version
+        // copies the device details, #279); null for none.
+        var onLongClick: (() -> Unit)? = null
+            private set
+
+        fun withLook(look: RowLook): Row =
+            Row(title, subtitle, onClick, visibleIf, titleText, look).also { it.onLongClick = onLongClick }
+
+        fun onLongPress(action: () -> Unit): Row = apply { onLongClick = action }
     }
 
     // How a Row dresses in its card: the icon in its leading tile, 0 for
@@ -238,4 +247,5 @@ class Choice(
 sealed class ChoicePreview<T>(val values: List<T>) {
     object PageEffect : ChoicePreview<ScrollEffect>(ScrollEffect.entries)
     object Launch : ChoicePreview<LaunchAnimation>(LaunchAnimation.entries)
+    object Drawer : ChoicePreview<DrawerTransition>(DrawerTransition.entries)
 }

@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
@@ -906,12 +908,15 @@ class LauncherRepository(private val context: Context) {
         isInstalled: (packageName: String, userSerial: Long) -> Boolean,
         // Whether this id is still bound here, to this provider: a backup of
         // this same install, with its widget still up.
-        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean,
+        // Off when there is nothing to keep (an unreadable store, emptied):
+        // its empty snapshot would push a real backup out.
+        snapshotFirst: Boolean = true
     ): ImportResult {
         val payload = runCatching { json.decodeFromString<BackupPayload>(raw) }.getOrElse {
             throw com.supernova.launcher.data.imports.UnreadableBackupException("not a launcher backup")
         }
-        return restore(withRetiredFolderSort(raw, payload), currentPrefs, isInstalled, widgetBound)
+        return restore(withRetiredFolderSort(raw, payload), currentPrefs, isInstalled, widgetBound, snapshotFirst)
     }
 
     // A backup from before the folder A-Z setting was retired, taken with it
@@ -955,7 +960,8 @@ class LauncherRepository(private val context: Context) {
         payload: BackupPayload,
         currentPrefs: LauncherPrefs,
         isInstalled: (packageName: String, userSerial: Long) -> Boolean,
-        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean,
+        snapshotFirst: Boolean = true
     ): ImportResult {
         val migrated = ModelMigrations.migrate(payload.model)
 
@@ -983,7 +989,9 @@ class LauncherRepository(private val context: Context) {
         // What is being replaced stays recoverable from Automatic backups, as
         // Reset's does: without that snapshot, no import. Written under the
         // lock, so no layout edit lands in between and is lost.
-        check(writeAutoBackup(currentPrefs)) { "couldn't save a backup of the current layout first" }
+        if (snapshotFirst) {
+            check(writeAutoBackup(currentPrefs)) { "couldn't save a backup of the current layout first" }
+        }
         lock.withLock {
             context.supernovaStore.edit { prefs ->
                 prefs[StoreKeys.model] = json.encodeToString(validated)
@@ -1184,15 +1192,20 @@ class LauncherRepository(private val context: Context) {
         return current.copy(items = result)
     }
 
+    // Off the main thread: callers launch on the view model's (main) scope,
+    // and DataStore runs the edit in the caller's context, so every drop,
+    // resize and edit encoded the whole layout there.
     private suspend fun mutate(block: (LauncherModel) -> LauncherModel) {
-        lock.withLock {
-            // Never over a layout this build couldn't read: an edit to the
-            // empty stand-in would replace it for good.
-            val current = decode(context.supernovaStore.data.first()[StoreKeys.model]) ?: return
-            val next = AppItemEdits.stampNew(current, LargeIcons.withSmallIconsOffDesktop(block(current)))
-            if (next == current) return
-            context.supernovaStore.edit { prefs ->
-                prefs[StoreKeys.model] = json.encodeToString(next)
+        withContext(Dispatchers.Default) {
+            lock.withLock {
+                // Never over a layout this build couldn't read: an edit to the
+                // empty stand-in would replace it for good.
+                val current = decode(context.supernovaStore.data.first()[StoreKeys.model]) ?: return@withLock
+                val next = AppItemEdits.stampNew(current, LargeIcons.withSmallIconsOffDesktop(block(current)))
+                if (next == current) return@withLock
+                context.supernovaStore.edit { prefs ->
+                    prefs[StoreKeys.model] = json.encodeToString(next)
+                }
             }
         }
     }
