@@ -109,8 +109,8 @@ class AppCatalog(
                     installTime = info.firstInstallTime,
                     privateSpace = isPrivate,
                     work = isWork,
-                    sizeBytes = sizes.getOrPut("$serial/${component.packageName}") { installedSize(info) },
-                    privateSpace = isPrivate
+                    sizeBytes = sizes.getOrPut("$serial/${component.packageName}") {
+			 installedSize(info)
                 )
             }
         }.let { apps -> LabelOrder.sorted(apps) { it.label } }
