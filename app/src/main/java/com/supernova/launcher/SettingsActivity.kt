@@ -1,5 +1,6 @@
 package com.supernova.launcher
 
+import androidx.core.content.edit
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -18,6 +19,7 @@ import androidx.core.graphics.toColorInt
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnNextLayout
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
@@ -25,8 +27,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.supernova.launcher.data.CornerCut
+import com.supernova.launcher.data.CustomIcons
 import com.supernova.launcher.data.CustomShapeSpec
 import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.DrawerGroupType
@@ -55,6 +59,7 @@ import com.supernova.launcher.ui.FolderPreviewStyle
 import com.supernova.launcher.ui.LabelStyler
 import com.supernova.launcher.ui.LauncherViewModel
 import com.supernova.launcher.ui.dp
+import com.supernova.launcher.ui.followLauncherAnimations
 import com.supernova.launcher.ui.settings.ColorSheet
 import com.supernova.launcher.ui.settings.EnumLabels
 import com.supernova.launcher.ui.settings.PreviewController
@@ -66,7 +71,6 @@ import com.supernova.launcher.ui.settings.SettingsSearchIndex
 import com.supernova.launcher.ui.settings.SettingsSection
 import com.supernova.launcher.ui.settings.StylePickerSheet
 import com.supernova.launcher.ui.textSizeOf
-import com.supernova.launcher.ui.theme.AccentColor
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.Styles
 import com.supernova.launcher.ui.theme.SurfaceId
@@ -135,7 +139,13 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var previews: PreviewController
     // The one view living in previewPane; created on first use.
     private var paneView: com.supernova.launcher.ui.settings.preview.SettingsPreviewView? = null
-    private var appliedAccent: AccentColor = AccentColor.BLUE
+    // The accent colour this activity was themed with (ThemeEngine.
+    // applySettingsAccent); a different one recreates it, but not while a
+    // style sheet is open, which the recreate would close mid-pick.
+    private var appliedAccent: Int = 0
+    // Likewise the Settings style's Text (#281), null when unset.
+    private var appliedText: Int? = null
+    private var stylePickerOpen = false
 
     // Header search over the whole catalogue; the index resolves lazily on
     // first activation so plain settings visits never build it.
@@ -167,11 +177,14 @@ class SettingsActivity : AppCompatActivity() {
         val granted = permission.granted(this)
         when (permission) {
             com.supernova.launcher.ui.settings.LabsPermission.NOTIFICATIONS ->
-                com.supernova.launcher.ui.PermissionPrompts.openNotificationAccess(this)
-            com.supernova.launcher.ui.settings.LabsPermission.ACCESSIBILITY ->
-                runLogged("open accessibility settings") {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
+                com.supernova.launcher.ui.PermissionPrompts.openNotificationAccessWithHelp(this)
+            // On: straight to the system screen to turn it off. Off: the
+            // disclosure first.
+            com.supernova.launcher.ui.settings.LabsPermission.ACCESSIBILITY -> if (granted) {
+                com.supernova.launcher.ui.PermissionPrompts.openAccessibilitySettings(this)
+            } else {
+                com.supernova.launcher.ui.PermissionPrompts.explainAccessibility(this)
+            }
             com.supernova.launcher.ui.settings.LabsPermission.DEVICE_ADMIN -> if (granted) {
                 // The app can give up its own admin; asking first, since
                 // the lock method that needs it stops working.
@@ -302,29 +315,78 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+    // The group page (or null, the groups list) a drawer menu opened, while
+    // the activity came from one; unset for any other way in.
+    private var drawerLanding: String? = null
+    private var cameFromDrawer = false
+
+    private fun landedFromDrawer(): Boolean =
+        cameFromDrawer && onGroupsPage() && groupsPane?.editing == drawerLanding
+
+    // Back with the keyboard up only takes the keyboard down; the next Back
+    // leaves the page. The callback can sit above the keyboard's own: it is
+    // re-registered whenever search turns it on, after the keyboard opened.
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            val parent = currentSection?.title?.let(subPageParents::get)
-            when {
-                searchActive -> setSearchActive(false)
-                // The Style tab opened from its row in the list: back to that
-                // row, as from any section.
-                styleFromList && currentTab == Tab.STYLE && currentSection == null -> {
-                    selectTab(Tab.SETTINGS)
-                    scrollRootTo(R.string.style_tab)
-                }
-                // From a group's own page back to the groups.
-                onGroupsPage() && groupsPane?.handleBack() == true -> Unit
-                // Back onto the row that opened the page, not the top.
-                parent != null -> navigateTo(parent, currentSection?.title ?: 0, flash = false)
-                else -> {
-                    val left = currentSection?.title
-                    currentSection = null
-                    render()
-                    // The root list comes back on the section just left.
-                    left?.let(::scrollRootTo)
-                }
+            if (hideKeyboardIfShown()) return
+            navigateBack()
+        }
+    }
+
+    private fun hideKeyboardIfShown(): Boolean {
+        val shown = ViewCompat.getRootWindowInsets(binding.root)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        if (shown) hideSearchKeyboard()
+        return shown
+    }
+
+    // Takes the keyboard down from whichever search field has it; the query
+    // and its results stay.
+    private fun hideSearchKeyboard() {
+        val imm = getSystemService(InputMethodManager::class.java)
+        listOf(binding.rootSearchInput, binding.settingsSearchInput).forEach { field ->
+            if (field.hasFocus()) field.clearFocus()
+        }
+        imm?.hideSoftInputFromWindow(binding.root.windowToken, 0)
+    }
+
+    private fun navigateBack() {
+        val parent = currentSection?.title?.let(subPageParents::get)
+        when {
+            searchActive -> setSearchActive(false)
+            // Opened from a drawer tab's or folder's menu: back from the
+            // page it landed on goes back to the drawer (#247).
+            landedFromDrawer() -> finish()
+            // The Style tab opened from its row in the list: back to that
+            // row, as from any section.
+            styleFromList && currentTab == Tab.STYLE && currentSection == null -> {
+                selectTab(Tab.SETTINGS)
+                scrollRootTo(R.string.style_tab)
             }
+            // From a group's own page back to the groups.
+            onGroupsPage() && groupsPane?.handleBack() == true -> Unit
+            // Back onto the row that opened the page, not the top.
+            parent != null -> navigateTo(parent, currentSection?.title ?: 0, flash = false)
+            else -> {
+                val left = currentSection?.title
+                currentSection = null
+                render()
+                // The root list comes back on the section just left.
+                left?.let(::scrollRootTo)
+            }
+        }
+    }
+
+    private var navBottom = 0
+    private var listBottomPadding = 0
+
+    // A section page has no tab bar to take the navigation bar, so its list
+    // keeps clear of it itself. The keyboard is left to cover the list: a
+    // drag on the list takes it down.
+    private fun applyListBottomPadding() {
+        val covered = if (binding.settingsTabs.isVisible) 0 else navBottom
+        val padding = listBottomPadding + covered
+        if (binding.settingsRecycler.paddingBottom != padding) {
+            binding.settingsRecycler.updatePadding(bottom = padding)
         }
     }
 
@@ -337,8 +399,8 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        appliedAccent = viewModel.state.value.prefs.accentColor
-        ThemeEngine.applyAccent(this, appliedAccent)
+        appliedAccent = ThemeEngine.applySettingsAccent(this, viewModel.state.value.prefs)
+        appliedText = com.supernova.launcher.ui.theme.CustomAccent.settingsText(this, viewModel.state.value.prefs)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
         // Edge-to-edge, like the launcher window: the toolbar takes the status
@@ -387,6 +449,7 @@ class SettingsActivity : AppCompatActivity() {
             binding.settingsRecycler, binding.groupsPane, binding.settingsTabs
         )
         val basePadding = sideInsetViews.map { Triple(it.paddingLeft, it.paddingRight, it.paddingBottom) }
+        listBottomPadding = binding.settingsRecycler.paddingBottom
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -407,20 +470,48 @@ class SettingsActivity : AppCompatActivity() {
                 if (child === binding.settingsTabs) {
                     child.updatePadding(bottom = bottom + bars.bottom)
                 }
+                // Section pages have no tab bar to take the navigation bar,
+                // so the Drawer groups page keeps clear of it itself.
+                if (child === binding.groupsPane) {
+                    child.updatePadding(bottom = bottom + if (binding.settingsTabs.isVisible) 0 else bars.bottom)
+                }
             }
+            navBottom = bars.bottom
+            applyListBottomPadding()
             insets
         }
+        // A finger drag on the list takes the keyboard down, as in the
+        // drawer and home search, so the results under it can be read.
+        binding.settingsRecycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+                if (newState == RecyclerView.SCROLL_STATE_DRAGGING) hideKeyboardIfShown()
+            }
+        })
         previews = PreviewController(viewModel)
         adapter = SettingsAdapter(previews)
         adapter.onRowTapped = { menuAnchor = it }
 
         val actions = SettingsCatalogue.Actions(
+            pickColor = { title, current, default, onPick ->
+                val prefs = viewModel.state.value.prefs
+                val palette = com.supernova.launcher.ui.theme.PaletteFactory.resolve(
+                    this, prefs.paletteSource, prefs.paletteSeed,
+                    com.supernova.launcher.ui.theme.ThemeEngine.accentColor(this, prefs.accentColor)
+                )
+                ColorSheet(this, palette, default).show(title, current, onPick)
+            },
             pickChoice = {
-                showChoice(getString(it.title), it.labels, it.selected, MenuExtras(swatches = it.swatches), it.onPick)
+                if (it.preview != null) {
+                    com.supernova.launcher.ui.settings.MotionChoiceSheet.show(this, viewModel, it)
+                } else {
+                    val extras = MenuExtras(swatches = it.swatches)
+                    showChoice(getString(it.title), it.labels, it.selected, extras, it.onPick)
+                }
             },
             pickIconPack = ::showIconPackPicker,
             pickIconShape = ::showIconShapePicker,
             resetCustomIcons = ::confirmResetCustomIcons,
+            resetHiddenLabels = ::confirmResetHiddenLabels,
             exportIcons = { exportIconsLauncher.launch("supernova-icons.zip") },
             managePermission = ::manageLabsPermission,
             clearIconCache = {
@@ -452,7 +543,14 @@ class SettingsActivity : AppCompatActivity() {
                     .show()
             },
             openPaletteDialog = ::showPaletteSourcePicker,
-            openStylePicker = { surfaceId -> StylePickerSheet.show(this, viewModel, surfaceId) },
+            editSearchUrl = ::promptSearchUrl,
+            openStylePicker = { surfaceId ->
+                stylePickerOpen = true
+                StylePickerSheet.show(this, viewModel, surfaceId) {
+                    stylePickerOpen = false
+                    recreateForAccent(viewModel.state.value.prefs)
+                }
+            },
             showAutoBackups = ::showAutoBackups,
             editGesture = ::showActionPicker,
             pickLockMethod = ::showLockMethodPicker,
@@ -469,15 +567,7 @@ class SettingsActivity : AppCompatActivity() {
                         .putExtra(com.supernova.launcher.onboarding.OnboardingActivity.EXTRA_RERUN, true)
                 )
             },
-            restartLauncher = {
-                // It closes Settings and the home screen at once: asked first.
-                MaterialAlertDialogBuilder(this)
-                    .setTitle(R.string.restart_launcher_q)
-                    .setMessage(R.string.restart_launcher_message)
-                    .setPositiveButton(R.string.restart) { _, _ -> restartLauncher() }
-                    .setNegativeButton(R.string.cancel, null)
-                    .show()
-            },
+            restartLauncher = ::confirmRestart,
             showCrashLog = ::showCrashLog,
             onBadgesEnabled = {
                 com.supernova.launcher.ui.PermissionPrompts
@@ -497,50 +587,34 @@ class SettingsActivity : AppCompatActivity() {
                 }
             },
             editPopupRows = ::showPopupRowsDialog,
-            onFeedCalendarEnabled = {
-                if (checkSelfPermission(android.Manifest.permission.READ_CALENDAR) !=
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
-                ) {
-                    requestFeedCalendarPermission.launch(android.Manifest.permission.READ_CALENDAR)
-                }
-            },
-            onFeedContactsEnabled = {
-                if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) !=
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
-                ) {
-                    requestFeedContactsPermission.launch(android.Manifest.permission.READ_CONTACTS)
-                }
-            },
+            onFeedCalendarEnabled = ::requestFeedCalendarIfNeeded,
+            onFeedContactsEnabled = ::requestFeedContactsIfNeeded,
             editCard = { card ->
                 com.supernova.launcher.ui.CustomCardEditorSheet
-                    .show(this, viewModel, card, undoAnchor = binding.settingsTabs)
+                    .show(this, viewModel, card, undoAnchor = binding.settingsTabs.takeIf { it.isVisible })
             },
-            openCards = { navigateTo(R.string.settings_section_cards, 0) },
-            openNotificationAccess = { com.supernova.launcher.ui.PermissionPrompts.openNotificationAccess(this) },
-            cardPreview = { card, parent ->
-                // The feed's own binder, inert: no launches, no menu, and a
-                // widget-featured card shows without its widget.
-                val binder = com.supernova.launcher.ui.CardViewBinder(
-                    com.supernova.launcher.ui.CardViewBinder.Callbacks(
-                        onLaunchTarget = { _, _, _ -> },
-                        widgetView = { null },
-                        iconForTarget = { target ->
-                            com.supernova.launcher.ui.CustomCardEditorSheet.iconForTarget(viewModel, target)
-                        },
-                        labelForTarget = { target ->
-                            com.supernova.launcher.ui.CustomCardEditorSheet.labelForTarget(viewModel, target)
-                        },
-                        onMenu = null
-                    )
+            openNotificationAccess = {
+                com.supernova.launcher.ui.PermissionPrompts.openNotificationAccessWithHelp(this)
+            },
+            // Add card: the add sheet. A widget is bound by the launcher, so
+            // that choice goes back to the feed and picks one there.
+            addCard = {
+                com.supernova.launcher.ui.FeedAddSheet.show(
+                    this, viewModel,
+                    onWidget = {
+                        startActivity(
+                            Intent(this, LauncherActivity::class.java)
+                                .putExtra(LauncherActivity.EXTRA_ADD_FEED_WIDGET, true)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    },
+                    onShortcuts = {
+                        com.supernova.launcher.ui.CustomCardEditorSheet
+                            .show(this, viewModel, null, undoAnchor = binding.settingsTabs.takeIf { it.isVisible })
+                    },
+                    requestCalendar = ::requestFeedCalendarIfNeeded,
+                    requestContacts = ::requestFeedContactsIfNeeded
                 )
-                val popup = com.supernova.launcher.ui.theme.Styles
-                    .resolve(this, viewModel.state.value.prefs)
-                    .of(com.supernova.launcher.ui.theme.SurfaceId.POPUP)
-                binder.setAppearance(popup.surface, popup.text, popup.accent)
-                binder.inflate(parent).also { binder.bind(it, card) }.root
-            },
-            builtInPreview = { kind, parent ->
-                com.supernova.launcher.ui.settings.CardPreviews.builtIn(kind, parent, viewModel.state.value.prefs)
             },
             openSection = { title -> navigateTo(title, 0) }
         )
@@ -562,14 +636,13 @@ class SettingsActivity : AppCompatActivity() {
             // opened again before the first render lays the rows out.
             state.getIntArray(STATE_OPEN_ACCORDIONS)?.let { adapter.openAccordions = it }
         }
+        // A fresh open brings back the sections left open last time (#254).
+        if (savedInstanceState == null) adapter.openAccordions = loadOpenAccordions()
 
         binding.settingsRecycler.layoutManager = LinearLayoutManager(this)
         binding.settingsRecycler.adapter = adapter
         groupCards = com.supernova.launcher.ui.settings.SettingsGroupDecoration(this, adapter)
         binding.settingsRecycler.addItemDecoration(groupCards)
-        binding.cardsFab.setOnClickListener {
-            com.supernova.launcher.ui.CustomCardEditorSheet.show(this, viewModel, null)
-        }
         // Watched rather than consumed: the row's own click listener still
         // runs, this only remembers where the press landed so the menu it
         // opens can appear there.
@@ -591,7 +664,7 @@ class SettingsActivity : AppCompatActivity() {
             }
         )
         binding.backButton.setOnClickListener {
-            if (searchActive || currentSection != null) backCallback.handleOnBackPressed() else finish()
+            if (searchActive || currentSection != null) navigateBack() else finish()
         }
         onBackPressedDispatcher.addCallback(this, backCallback)
         binding.settingsSearchButton.setOnClickListener { setSearchActive(!searchActive) }
@@ -653,6 +726,7 @@ class SettingsActivity : AppCompatActivity() {
                         // otherwise open the stale, empty section.
                         if (!searchActive) render()
                     }
+                    binding.settingsRecycler.followLauncherAnimations(state.prefs)
                     adapter.updatePrefs(state.prefs)
                     groupsPane?.refresh()
                     bindPreviewPane(currentSection)
@@ -660,12 +734,21 @@ class SettingsActivity : AppCompatActivity() {
                     // Night mode recreates activities on its own; an accent
                     // change has to ask, and only when it really changed.
                     ThemeEngine.applyMode(this@SettingsActivity, state.prefs)
-                    if (state.prefs.accentColor != appliedAccent) {
-                        appliedAccent = state.prefs.accentColor
-                        recreate()
-                    }
+                    recreateForAccent(state.prefs)
                 }
             }
+        }
+    }
+
+    private fun recreateForAccent(prefs: LauncherPrefs) {
+        if (stylePickerOpen) return
+        val accent = com.supernova.launcher.ui.theme.CustomAccent.settingsAccent(this, prefs)
+            ?: ThemeEngine.accentColor(this, prefs.accentColor)
+        val text = com.supernova.launcher.ui.theme.CustomAccent.settingsText(this, prefs)
+        if (accent != appliedAccent || text != appliedText) {
+            appliedAccent = accent
+            appliedText = text
+            recreate()
         }
     }
 
@@ -676,13 +759,18 @@ class SettingsActivity : AppCompatActivity() {
     private fun applySettingsSurface(prefs: LauncherPrefs) {
         val surface = Styles.resolve(this, prefs).of(SurfaceId.SETTINGS).surface
         binding.root.setBackgroundColor(surface)
+        // The clock sits on this background: dark icons on a light one, like
+        // a yellow Background in dark mode (#281). The navigation bar sits on
+        // the unstyled tab bar and keeps the theme's.
+        WindowCompat.getInsetsController(window, binding.root).isAppearanceLightStatusBars =
+            androidx.core.graphics.ColorUtils.calculateLuminance(surface or OPAQUE) > HALF
         groupCards.cardColor = when {
             surface == getColor(R.color.background) -> getColor(R.color.surface)
             androidx.core.graphics.ColorUtils.calculateLuminance(surface or OPAQUE) > HALF ->
                 androidx.core.graphics.ColorUtils.blendARGB(surface, android.graphics.Color.WHITE, CARD_LIFT_LIGHT)
             else -> androidx.core.graphics.ColorUtils.blendARGB(surface, android.graphics.Color.WHITE, CARD_LIFT_DARK)
         }
-        groupCards.dividerColor = getColor(R.color.settingsDivider)
+        groupCards.dividerColor = getColor(R.color.settingsPageDivider)
         binding.settingsRecycler.invalidateItemDecorations()
         groupsPane?.cardColor = groupCards.cardColor
     }
@@ -702,18 +790,69 @@ class SettingsActivity : AppCompatActivity() {
         outState.putIntArray(STATE_OPEN_ACCORDIONS, adapter.openAccordions)
     }
 
-    // Sections reached only from a built-in card's gear on the Cards page.
-    private val cardSections = setOf(
-        R.string.cards_media_title, R.string.feed_calendar_title, R.string.feed_contacts_title
-    )
+    override fun onStop() {
+        super.onStop()
+        saveOpenAccordions()
+    }
+
+    // The open Advanced sections and nested switches, kept across launches.
+    // Stored by resource name: the ids can change from one build to the next.
+    private fun saveOpenAccordions() {
+        val pairs = adapter.openAccordions
+        val names = (0 until pairs.size / 2).mapNotNull { i ->
+            val page = if (pairs[2 * i] == 0) "" else resourceName(pairs[2 * i]) ?: return@mapNotNull null
+            val title = resourceName(pairs[2 * i + 1]) ?: return@mapNotNull null
+            "$page/$title"
+        }
+        runCatching {
+            getSharedPreferences(UI_STATE_PREFS, MODE_PRIVATE).edit {
+                putStringSet(KEY_OPEN_ACCORDIONS, names.toSet())
+            }
+        }
+    }
+
+    private fun loadOpenAccordions(): IntArray {
+        val names = runCatching {
+            getSharedPreferences(UI_STATE_PREFS, MODE_PRIVATE).getStringSet(KEY_OPEN_ACCORDIONS, null)
+        }.getOrNull().orEmpty()
+        return names.flatMap { entry ->
+            val page = entry.substringBefore('/')
+            val pageId = if (page.isEmpty()) 0 else stringId(page)
+            val titleId = stringId(entry.substringAfter('/'))
+            if (pageId == null || titleId == null) emptyList() else listOf(pageId, titleId)
+        }.toIntArray()
+    }
+
+    private fun resourceName(id: Int): String? = runCatching { resources.getResourceEntryName(id) }.getOrNull()
+
+    @android.annotation.SuppressLint("DiscouragedApi")
+    private fun stringId(name: String): Int? =
+        resources.getIdentifier(name, "string", resources.getResourcePackageName(R.string.advanced))
+            .takeIf { it != 0 }
+
+    private fun requestFeedCalendarIfNeeded() {
+        if (checkSelfPermission(android.Manifest.permission.READ_CALENDAR) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestFeedCalendarPermission.launch(android.Manifest.permission.READ_CALENDAR)
+        }
+    }
+
+    private fun requestFeedContactsIfNeeded() {
+        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestFeedContactsPermission.launch(android.Manifest.permission.READ_CONTACTS)
+        }
+    }
 
     // Pages opened from a row on another page rather than from the root,
     // and the page that row is on: back returns there.
     private val subPageParents = mapOf(
-        R.string.desktop_search_bar to R.string.settings_section_search,
-        R.string.drawer_search_bar to R.string.settings_section_search,
+        R.string.desktop_search_bar to R.string.settings_section_home,
+        R.string.drawer_search_bar to R.string.settings_section_drawer,
         R.string.drawer_groups to R.string.settings_section_drawer
-    ) + cardSections.associateWith { R.string.settings_section_cards }
+    )
 
     // The Drawer groups page is the pane's, not the list's. A search from
     // its toolbar shows results in the list, and Back returns to the pane.
@@ -732,8 +871,12 @@ class SettingsActivity : AppCompatActivity() {
             this, binding.groupsPane, viewModel, itemIcons,
             onTitleChanged = ::applyGroupsTitle,
             editFolderIcon = { group ->
-                com.supernova.launcher.ui.FolderEditSheet
-                    .showDrawerFolder(this, lifecycleScope, viewModel, group, ::pickPhoto)
+                if (group.type == com.supernova.launcher.data.DrawerGroupType.TAB) {
+                    com.supernova.launcher.ui.TabIconPicker.show(this, lifecycleScope, viewModel, group, ::pickPhoto)
+                } else {
+                    com.supernova.launcher.ui.FolderEditSheet
+                        .showDrawerFolder(this, lifecycleScope, viewModel, group, ::pickPhoto)
+                }
             }
         ).also {
             groupsPane = it
@@ -745,7 +888,7 @@ class SettingsActivity : AppCompatActivity() {
 
     // A group's own page goes by the group's name.
     private fun applyGroupsTitle() {
-        if (onGroupsPage()) binding.settingsTitle.text = groupsPane?.editing ?: getString(R.string.drawer_groups)
+        if (onGroupsPage()) binding.settingsTitle.text = groupsPane?.title ?: getString(R.string.drawer_groups)
     }
 
     private fun pickPhoto(fromFiles: Boolean, onPicked: (android.net.Uri?) -> Unit) {
@@ -766,13 +909,6 @@ class SettingsActivity : AppCompatActivity() {
         binding.tabStyle.isSelected = currentTab == Tab.STYLE
         val section = currentSection
         backCallback.isEnabled = section != null || searchActive || (styleFromList && currentTab == Tab.STYLE)
-        // The Cards page adds from a FAB.
-        binding.cardsFab.visibility =
-            if (section?.title == R.string.settings_section_cards && !searchActive && currentTab == Tab.SETTINGS) {
-                View.VISIBLE
-            } else {
-                View.GONE
-            }
 
         applyHeader(section)
         showGroupsPane(onGroupsPage())
@@ -817,7 +953,7 @@ class SettingsActivity : AppCompatActivity() {
     // (a new one) joins the last card, so it is never lost from the list.
     private fun rootItems(): List<SettingItem> {
         val shown = sections.filter {
-            it.items.isNotEmpty() && it.title !in cardSections && it.title !in subPageParents
+            it.items.isNotEmpty() && it.title !in subPageParents
         }
         val groups = listOf(
             R.string.settings_group_screens to listOf(
@@ -825,8 +961,7 @@ class SettingsActivity : AppCompatActivity() {
                 R.string.settings_section_folders, R.string.settings_section_feed
             ),
             R.string.settings_group_customize to listOf(
-                R.string.settings_section_icons, R.string.gestures, R.string.settings_section_search,
-                R.string.settings_section_cards
+                R.string.settings_section_icons, R.string.gestures, R.string.settings_section_search
             ),
             R.string.settings_group_app to listOf(
                 R.string.settings_section_backup, R.string.permissions, R.string.about, R.string.labs
@@ -868,8 +1003,19 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 members.forEach { add(sectionLink(it)) }
             }
+            add(restartLink())
         }
     }
+
+    // Last in the App card, under Labs (#293): a launcher is hard to
+    // restart from outside, so the root list offers it directly.
+    private fun restartLink(): SettingItem.SectionLink =
+        SettingItem.SectionLink(
+            R.string.restart_supernova,
+            icon = R.drawable.ic_settings_restart,
+            subtitle = { getString(R.string.restart_supernova_subtitle) },
+            onClick = ::confirmRestart
+        )
 
     private fun sectionLink(s: SettingsSection): SettingItem.SectionLink =
         SettingItem.SectionLink(
@@ -895,17 +1041,38 @@ class SettingsActivity : AppCompatActivity() {
         binding.rootTitle.setText(if (currentTab == Tab.STYLE) R.string.style_tab else R.string.settings)
         binding.rootSearch.isVisible = root
         binding.settingsToolbar.isVisible = !root
-        if (!root && binding.rootSearchInput.hasFocus()) {
+        // The Settings/Style tabs belong to the two root lists; a section
+        // page gives their room to its list, and Back leads to them (#283).
+        if (binding.settingsTabs.isVisible != root) {
+            binding.settingsTabs.isVisible = root
+            ViewCompat.requestApplyInsets(binding.root)
+        }
+        // A page opened from the main list takes the keyboard down, whether
+        // or not the pill still holds focus (a tap on a row can take it
+        // first). A section's own search brings it back up after this.
+        if (!root && !searchActive) {
             binding.rootSearchInput.clearFocus()
-            getSystemService(InputMethodManager::class.java)
-                ?.hideSoftInputFromWindow(binding.rootSearchInput.windowToken, 0)
+            hideKeyboardIfShown()
         }
         val page = currentTab to section?.title
         if (page != shownPage) {
             shownPage = page
             binding.settingsAppBar.setExpanded(true, false)
             binding.settingsRecycler.scrollToPosition(0)
+            showPageWhole()
         }
+    }
+
+    // A new page lands in one frame with its header and preview. The rows
+    // keep stable ids, so the item animator would fade the old page's rows
+    // out and only then fade the new ones in, a beat behind the rest (#292).
+    // It sits out that one layout, then follows the launcher's switch again
+    // (#312); accordions and switches still animate.
+    private fun showPageWhole() {
+        val list = binding.settingsRecycler
+        if (list.itemAnimator == null) return
+        list.itemAnimator = null
+        list.doOnNextLayout { list.followLauncherAnimations(viewModel.state.value.prefs) }
     }
 
     // Leading icons for the root list.
@@ -929,11 +1096,16 @@ class SettingsActivity : AppCompatActivity() {
         // Clipped to its rounded card, the wallpaper's hole included.
         binding.previewPane.clipToOutline = true
         binding.previewPane.showsWallpaper =
-            preview.kind == PreviewKind.HOME || preview.kind == PreviewKind.SEARCH_BAR
+            preview.kind == PreviewKind.HOME || preview.kind == PreviewKind.SEARCH_BAR ||
+            preview.kind == PreviewKind.DRAWER || preview.kind == PreviewKind.DOCK
         // Same guard as the in-list holder: never rebuild mid slider drag.
         if (!previews.isTracking) {
             val view = paneView ?: com.supernova.launcher.ui.settings.preview.SettingsPreviewView(this).also {
                 paneView = it
+                // As item_setting_preview.xml has it: a corner badge
+                // reaches above its icon's row (#250).
+                it.clipChildren = false
+                it.clipToPadding = false
                 binding.previewPane.addView(
                     it,
                     // Centred in its card, however short the preview is.
@@ -945,6 +1117,11 @@ class SettingsActivity : AppCompatActivity() {
                 )
             }
             previews.attach(view, preview.kind)
+            // A preview that paints its own surface fills the card, its
+            // minimum height included; the others sit inside its padding.
+            val pad = if (view.fillsPane) 0 else resources.getDimensionPixelSize(R.dimen.space_sm)
+            binding.previewPane.setPadding(binding.previewPane.paddingLeft, pad, binding.previewPane.paddingRight, pad)
+            view.minimumHeight = if (view.fillsPane) binding.previewPane.minimumHeight else 0
         }
         return true
     }
@@ -971,16 +1148,42 @@ class SettingsActivity : AppCompatActivity() {
                 )
             )
         }
-        return found.map { entry ->
+        return found.map { hit ->
+            val entry = hit.entry
             // The entry's own name: a control found inside a row (the Label
-            // card's size) is listed as itself and leads to that row.
+            // card's size) is listed as itself and leads to that row. A row
+            // a setting hides isn't on its page to land on: the hit names
+            // that setting and leads to it instead (#133).
             SettingItem.Row(
                 entry.itemTitleRes,
-                subtitle = { entry.sectionLabel },
-                onClick = { navigateTo(entry.sectionTitleRes, entry.itemTitleRes) },
+                subtitle = { prefs -> hitSubtitle(hit, entry.hiddenBy(prefs)) },
+                onClick = {
+                    val hidden = entry.hiddenBy(viewModel.state.value.prefs)
+                    if (hidden == null) {
+                        navigateTo(entry.sectionTitleRes, entry.itemTitleRes)
+                    } else {
+                        navigateTo(hidden.page.takeIf { it != 0 } ?: entry.sectionTitleRes, hidden.setting)
+                    }
+                },
                 titleText = entry.itemLabel
             )
         }
+    }
+
+    // A hit's page, and for a hidden row what brings it back:
+    // "Dock · Needs Show dock on". A hit found through its description
+    // shows that line, so it's clear why it came up (#218).
+    private fun hitSubtitle(hit: SettingsSearchIndex.Hit, hidden: SettingItem.HiddenBy?): CharSequence {
+        val entry = hit.entry
+        if (hidden == null) {
+            return if (hit.byDescription) "${entry.sectionLabel} · ${entry.description}" else entry.sectionLabel
+        }
+        val reason = when (hidden.needs) {
+            SettingItem.HiddenBy.Needs.ON -> R.string.settings_search_needs_on
+            SettingItem.HiddenBy.Needs.OFF -> R.string.settings_search_needs_off
+            SettingItem.HiddenBy.Needs.OTHER -> R.string.settings_search_depends_on
+        }
+        return "${entry.sectionLabel} · ${getString(reason, getString(hidden.setting))}"
     }
 
     private fun setSearchActive(active: Boolean) {
@@ -1027,6 +1230,16 @@ class SettingsActivity : AppCompatActivity() {
             navigateTo(R.string.desktop_search_bar, 0)
             return
         }
+        // A drawer tab's or folder's menu: the Drawer groups page, on that
+        // group's own page when it gives one's id ("" is the list).
+        intent.getStringExtra(EXTRA_DRAWER_GROUP)?.let { group ->
+            navigateTo(R.string.drawer_groups, 0, flash = false)
+            groupsPane?.show(true, group.ifEmpty { null })
+            drawerLanding = group.ifEmpty { null }
+            cameFromDrawer = true
+            return
+        }
+        cameFromDrawer = false
         val section = intent.getIntExtra(EXTRA_SECTION_TITLE_RES, 0)
         if (section != 0) navigateTo(section, intent.getIntExtra(EXTRA_HIGHLIGHT_TITLE_RES, 0))
     }
@@ -1106,6 +1319,35 @@ class SettingsActivity : AppCompatActivity() {
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    // The Custom engine's search URL, %s where the query goes. An address
+    // that isn't http(s) is refused and the field stays open with the error.
+    private fun promptSearchUrl(select: Boolean) {
+        val prefs = viewModel.state.value.prefs
+        val input = EditText(this).apply {
+            hint = getString(R.string.search_web_custom_url)
+            setText(prefs.searchWebCustomUrl.ifEmpty { "https://" })
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine()
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.search_web_custom_title)
+            .setMessage(R.string.search_web_custom_message)
+            .setView(com.supernova.launcher.ui.DialogField.wrap(input))
+            .setPositiveButton(R.string.save, null)
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+        dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+            val url = input.text?.toString().orEmpty().trim()
+            if (!com.supernova.launcher.search.WebEngine.isUsableUrl(url)) {
+                input.error = getString(R.string.search_web_custom_invalid)
+                return@setOnClickListener
+            }
+            viewModel.set(Pref.searchWebCustomUrl, url)
+            if (select) viewModel.set(Pref.searchWebProvider, com.supernova.launcher.search.WebProvider.CUSTOM)
+            dialog.dismiss()
+        }
     }
 
     // Current default home's label, shown as the row's value pill.
@@ -1274,6 +1516,8 @@ class SettingsActivity : AppCompatActivity() {
     // Two chained time pickers: dark-from, then dark-until (D1).
     private fun showThemeScheduleEditor() {
         val prefs = viewModel.state.value.prefs
+        // The phone's own 12- or 24-hour clock.
+        val is24Hour = android.text.format.DateFormat.is24HourFormat(this)
         android.app.TimePickerDialog(
             this,
             { _, startHour, startMin ->
@@ -1282,10 +1526,10 @@ class SettingsActivity : AppCompatActivity() {
                     { _, endHour, endMin ->
                         viewModel.setThemeSchedule(startHour * 60 + startMin, endHour * 60 + endMin)
                     },
-                    prefs.themeScheduleEnd / 60, prefs.themeScheduleEnd % 60, true
+                    prefs.themeScheduleEnd / 60, prefs.themeScheduleEnd % 60, is24Hour
                 ).apply { setTitle(getString(R.string.theme_schedule_until)) }.show()
             },
-            prefs.themeScheduleStart / 60, prefs.themeScheduleStart % 60, true
+            prefs.themeScheduleStart / 60, prefs.themeScheduleStart % 60, is24Hour
         ).apply { setTitle(getString(R.string.theme_schedule_from)) }.show()
     }
 
@@ -1329,7 +1573,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // The drawer twin of the desktop grid dialog, on the same layout: rows
-    // and columns step down to 0 = Auto (both apply to the two grid styles); the subgrid checkbox has no drawer meaning
+    // and columns step down to 0 = Auto (both apply to the two grid styles); the subgrid switch has no drawer meaning
     // and hides. Only OK commits.
     private fun showDrawerGridDialog() {
         val dialogBinding = DialogDesktopGridBinding.inflate(layoutInflater)
@@ -1369,7 +1613,7 @@ class SettingsActivity : AppCompatActivity() {
             .show()
     }
 
-    // Folder icon appearance: shape + outline/clip/window-color toggles, all
+    // Folder icon appearance: shape + outline/window-color toggles, all
     // edited against a live FolderIconDrawable preview of placeholder tiles.
     // Only OK commits the prefs.
     private fun showFolderIconEditor() {
@@ -1378,7 +1622,6 @@ class SettingsActivity : AppCompatActivity() {
         var shapeName = prefs.folderIconShape
         var plateColor = prefs.folderPlateColor
         dialogBinding.outlineCheck.isChecked = prefs.folderIconOutline
-        dialogBinding.clipCheck.isChecked = prefs.folderClipToBg
         dialogBinding.matchColorCheck.isChecked = prefs.folderMatchWindowColor
 
         // Placeholder members: colored tiles, so the preview needs no app icons.
@@ -1413,7 +1656,6 @@ class SettingsActivity : AppCompatActivity() {
                     customSpec = CustomShapeSpec.decode(prefs.iconShapeCustom),
                     outlineColor = if (dialogBinding.outlineCheck.isChecked) resolved.accent else 0,
                     outlineWidthPx = 2f * resources.displayMetrics.density,
-                    clipMembers = dialogBinding.clipCheck.isChecked,
                     prioritizeFirst = prefs.folderPrioritizeFirst,
                     glass = com.supernova.launcher.ui.FolderIconDrawable.glassFor(prefs),
                     shadow = prefs.iconShadow
@@ -1446,7 +1688,6 @@ class SettingsActivity : AppCompatActivity() {
         }
         listOf(
             dialogBinding.outlineRow to dialogBinding.outlineCheck,
-            dialogBinding.clipRow to dialogBinding.clipCheck,
             dialogBinding.matchColorRow to dialogBinding.matchColorCheck
         ).forEach { (row, box) ->
             row.setOnClickListener { box.toggle() }
@@ -1460,7 +1701,6 @@ class SettingsActivity : AppCompatActivity() {
             .setPositiveButton(R.string.ok) { _, _ ->
                 viewModel.set(Pref.folderIconShape, shapeName)
                 viewModel.set(Pref.folderIconOutline, dialogBinding.outlineCheck.isChecked)
-                viewModel.set(Pref.folderClipToBg, dialogBinding.clipCheck.isChecked)
                 viewModel.set(Pref.folderMatchWindowColor, dialogBinding.matchColorCheck.isChecked)
                 viewModel.set(Pref.folderPlateColor, plateColor)
             }
@@ -1470,19 +1710,8 @@ class SettingsActivity : AppCompatActivity() {
 
     // A curated color by name, any other by hex, and the opacity when it
     // isn't solid: "Red", "Red, 50%", "#3F51B5".
-    private fun plateColorLabel(stored: String): String {
-        if (stored.isEmpty()) return getString(R.string.color_default)
-        val color = LabelStyler.parseColor(stored, com.supernova.launcher.ui.FolderIconDrawable.DEFAULT_PLATE_COLOR)
-        val rgb = android.graphics.Color.rgb(
-            android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color)
-        )
-        val named = SettingsCatalogue.CURATED_COLORS.firstOrNull {
-            it.second.isNotEmpty() && it.second.toColorInt() == rgb
-        }
-        val name = named?.let { getString(it.first) } ?: String.format(java.util.Locale.ROOT, "#%06X", rgb and 0xFFFFFF)
-        val opacity = ColorSheet.percent(color)
-        return if (color == rgb) name else getString(R.string.color_with_opacity, name, opacity)
-    }
+    private fun plateColorLabel(stored: String): String =
+        SettingsCatalogue.colorLabel(this, stored, com.supernova.launcher.ui.FolderIconDrawable.DEFAULT_PLATE_COLOR)
 
     private fun showLockMethodPicker() {
         val methods = listOf(LockMethod.ACCESSIBILITY, LockMethod.DEVICE_ADMIN)
@@ -1644,14 +1873,89 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun confirmResetCustomIcons() {
-        if (viewModel.customIcons().total == 0) {
+        val count = viewModel.customIcons()
+        if (count.total == 0) {
             Toast.makeText(this, R.string.reset_custom_icons_none_toast, Toast.LENGTH_SHORT).show()
             return
         }
-        MaterialAlertDialogBuilder(this)
+        // A tick per kind that has custom icons, with its count; only the
+        // drawer's apps start ticked, so icons given to apps on the home
+        // screen and folder, tab, shortcut and contact icons stay unless
+        // picked (#168, #211).
+        val kinds = CustomIcons.Kind.entries.filter { count.of(it) > 0 }
+        val ticked = kinds.filterTo(mutableSetOf()) { it == CustomIcons.Kind.APPS }
+        val density = resources.displayMetrics.density
+        fun dpPx(value: Int) = (value * density).toInt()
+        val column = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dpPx(TICK_LIST_SIDE_DP), dpPx(TICK_LIST_GAP_DP), dpPx(TICK_LIST_SIDE_DP), dpPx(TICK_LIST_GAP_DP))
+        }
+        var resetButton: android.widget.Button? = null
+        // The dialog buttons' colour has no disabled state, so dim by hand.
+        fun updateReset() = resetButton?.run {
+            isEnabled = ticked.isNotEmpty()
+            alpha = if (isEnabled) 1f else DISABLED_ALPHA
+        }
+        kinds.forEach { kind ->
+            column.addView(android.widget.CheckBox(this).apply {
+                text = resetKindLabel(kind, count.of(kind))
+                minHeight = dpPx(TICK_ROW_MIN_DP)
+                // The box drawable has no inset of its own.
+                setPaddingRelative(dpPx(12), paddingTop, paddingEnd, paddingBottom)
+                isChecked = kind in ticked
+                setOnCheckedChangeListener { _, checked ->
+                    if (checked) ticked.add(kind) else ticked.remove(kind)
+                    updateReset()
+                }
+            })
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.reset_custom_icons)
             .setMessage(R.string.reset_custom_icons_message)
-            .setPositiveButton(R.string.reset) { _, _ -> viewModel.resetCustomIcons() }
+            .setView(column)
+            .setPositiveButton(R.string.reset) { _, _ -> viewModel.resetCustomIcons(ticked.toSet()) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+        // Reset is destructive: red.
+        resetButton = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).apply {
+            setTextColor(getColor(R.color.accentRedText))
+        }
+        updateReset()
+        // Room under the buttons, which sit close to the dialog's edge.
+        dialog.findViewById<View>(androidx.appcompat.R.id.buttonPanel)?.let {
+            it.setPadding(it.paddingLeft, it.paddingTop, it.paddingRight, it.paddingBottom + dpPx(BUTTON_BAR_EXTRA_DP))
+        }
+    }
+
+    // "Apps • 2", the dot and count faded.
+    private fun resetKindLabel(kind: CustomIcons.Kind, count: Int): CharSequence {
+        val name = getString(
+            when (kind) {
+                CustomIcons.Kind.APPS -> R.string.reset_custom_icons_apps
+                CustomIcons.Kind.PLACED_APPS -> R.string.reset_custom_icons_placed_apps
+                CustomIcons.Kind.FOLDERS -> R.string.reset_custom_icons_folders
+                CustomIcons.Kind.SHORTCUTS -> R.string.reset_custom_icons_shortcuts
+            }
+        )
+        return android.text.SpannableStringBuilder(name).apply {
+            val start = length
+            append(" • $count")
+            setSpan(
+                android.text.style.ForegroundColorSpan(getColor(R.color.textSecondary)),
+                start, length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun confirmResetHiddenLabels() {
+        if (viewModel.hiddenLabels().total == 0) {
+            Toast.makeText(this, R.string.reset_hidden_labels_none_toast, Toast.LENGTH_SHORT).show()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.reset_hidden_labels)
+            .setMessage(R.string.reset_hidden_labels_message)
+            .setPositiveButton(R.string.reset) { _, _ -> viewModel.resetHiddenLabels() }
             .setNegativeButton(R.string.cancel, null)
             .show()
     }
@@ -1695,6 +1999,16 @@ class SettingsActivity : AppCompatActivity() {
     // ProcessPhoenix-style restart: schedule the launcher's MAIN/HOME intent
     // a beat from now, then hard-exit the process. recreate() only rebuilds
     // one activity; a real restart needs a fresh process.
+    // It closes Settings and the home screen at once: asked first.
+    private fun confirmRestart() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.restart_launcher_q)
+            .setMessage(R.string.restart_launcher_message)
+            .setPositiveButton(R.string.restart) { _, _ -> restartLauncher() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun restartLauncher() {
         runLogged("restart launcher") {
             val intent = Intent(this, LauncherActivity::class.java)
@@ -2065,7 +2379,7 @@ class SettingsActivity : AppCompatActivity() {
         fun header(titleRes: Int) {
             column.addView(android.widget.TextView(this).apply {
                 text = getString(titleRes)
-                setTextColor(getColor(R.color.accent))
+                setTextColor(com.supernova.launcher.ui.theme.CustomAccent.of(column))
                 textSizeOf(R.dimen.text_secondary)
                 setPadding(0, dpPx(12), 0, dpPx(4))
             })
@@ -2107,6 +2421,14 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val DISABLED_ALPHA = 0.38f
+
+        // Lines a tick box up with the dialog message's 24dp text edge.
+        private const val TICK_LIST_SIDE_DP = 18
+        private const val TICK_LIST_GAP_DP = 8
+        private const val TICK_ROW_MIN_DP = 48
+        private const val BUTTON_BAR_EXTRA_DP = 12
+
         // Each root section's icon and the blurb under its title.
         private val ROOT_SECTIONS: Map<Int, Pair<Int, Int>> = mapOf(
             R.string.settings_section_home to (R.drawable.ic_settings_home to R.string.section_home_subtitle),
@@ -2114,7 +2436,6 @@ class SettingsActivity : AppCompatActivity() {
             R.string.settings_section_drawer to (R.drawable.ic_settings_drawer to R.string.section_drawer_subtitle),
             R.string.settings_section_search to (R.drawable.ic_settings_search to R.string.section_search_subtitle),
             R.string.settings_section_feed to (R.drawable.ic_settings_feed to R.string.section_feed_subtitle),
-            R.string.settings_section_cards to (R.drawable.ic_settings_cards to R.string.section_cards_subtitle),
             R.string.settings_section_folders to (R.drawable.ic_settings_folders to R.string.section_folders_subtitle),
             R.string.settings_section_icons to (R.drawable.ic_settings_icons to R.string.section_icons_subtitle),
             R.string.gestures to (R.drawable.ic_settings_gestures to R.string.section_gestures_subtitle),
@@ -2151,6 +2472,8 @@ class SettingsActivity : AppCompatActivity() {
         private const val STATE_SECTION = "settings_section"
         private const val STATE_GROUP = "settings_group"
         private const val STATE_OPEN_ACCORDIONS = "settings_open_accordions"
+        private const val UI_STATE_PREFS = "settings_ui_state"
+        private const val KEY_OPEN_ACCORDIONS = "open_accordions"
 
         // How many of a pack's drawables the icon pack picker samples per row.
         // Enough to read the pack's style, few enough that the strip fits a
@@ -2172,6 +2495,7 @@ class SettingsActivity : AppCompatActivity() {
         const val EXTRA_OPEN_SEARCH_BAR = "extra_open_search_bar"
         const val EXTRA_SECTION_TITLE_RES = "extra_section_title_res"
         const val EXTRA_HIGHLIGHT_TITLE_RES = "extra_highlight_title_res"
+        const val EXTRA_DRAWER_GROUP = "extra_drawer_group"
 
         // Widest the settings content column grows in landscape, as a
         // multiple of the display's short edge - the width it has in

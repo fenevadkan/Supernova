@@ -278,6 +278,17 @@ class SupernovaPopupMenu(
     // The icon row a menu's actions go into with popupActionIcons on. Past
     // ACTION_ICONS_PER_ROW they wrap onto another.
     private var actionStrip: LinearLayout? = null
+    private val actionStrips = mutableListOf<LinearLayout>()
+
+    // The icons shared out evenly over the rows they fill, so six actions
+    // sit three and three rather than five over a lone one (#237).
+    private fun balanceActionStrips() {
+        if (actionStrips.size < 2) return
+        val buttons = actionStrips.flatMap { strip -> List(strip.childCount) { strip.getChildAt(it) } }
+        val perRow = (buttons.size + actionStrips.size - 1) / actionStrips.size
+        actionStrips.forEach { it.removeAllViews() }
+        buttons.forEachIndexed { index, button -> actionStrips[index / perRow].addView(button) }
+    }
 
     // An action as an icon alone: its name is its tooltip (held) and what a
     // screen reader says.
@@ -299,6 +310,7 @@ class SupernovaPopupMenu(
             )
             content.addView(this)
             actionStrip = this
+            actionStrips += this
         }
         val button = ImageView(context).apply {
             setImageResource(icon)
@@ -424,10 +436,18 @@ class SupernovaPopupMenu(
     // list style runs the full width of the screen, and a menu pinned to that
     // row's leading edge opens nowhere near the finger that opened it. Callers
     // with no touch to point at pass nothing and get the anchor's edge.
+    // The menu as built, never shown: the Icons & labels preview draws it
+    // beside its icons.
+    fun previewView(): View {
+        balanceActionStrips()
+        return popup.contentView
+    }
+
     fun show(anchor: View, touchX: Float? = null): SupernovaPopupMenu {
         // Before measuring: a menu long-pressed out of the drawer or the
         // search overlay opens with the keyboard up otherwise.
         anchor.hideKeyboardForWindow()
+        balanceActionStrips()
 
         // Placed absolutely rather than as a drop-down: showAsDropDown only
         // slides a too-tall popup, it doesn't flip it, so an anchor near the

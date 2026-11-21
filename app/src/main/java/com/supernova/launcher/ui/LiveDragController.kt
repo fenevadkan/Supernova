@@ -36,6 +36,7 @@ import com.supernova.launcher.data.LauncherItem
 import com.supernova.launcher.data.LauncherPrefs
 import com.supernova.launcher.data.LauncherRepository
 import com.supernova.launcher.data.WorkspaceGeometry
+import com.supernova.launcher.data.isLargeIcon
 import com.supernova.launcher.databinding.ActivityLauncherBinding
 import com.supernova.launcher.runLogged
 import com.supernova.launcher.widget.WidgetResizeFrame
@@ -724,7 +725,8 @@ class LiveDragController(
 
     private val dragLayer: DragLayer get() = binding.dragLayer
 
-    private class DragPicture(val bitmap: Bitmap, val source: Rect?)
+    // `outset`: room round an icon's picture for its shadow (iconPictureWithRoom).
+    private class DragPicture(val bitmap: Bitmap, val source: Rect?, val outset: Int = 0)
 
     // Runs inside the still-active long-press touch stream, of this window or
     // of the window the item was pressed in (routeItemGesture). False when
@@ -780,7 +782,8 @@ class LiveDragController(
         dragLayer.begin(
             picture.bitmap, grabX, grabY, lifted?.let(::roundedRect) ?: picture.source,
             if (isWidgetPayload(payload)) 1f else DRAG_PICKUP_SCALE,
-            Animations.duration(prefs, DRAG_PICKUP_MS)
+            Animations.duration(prefs, DRAG_PICKUP_MS),
+            picture.outset
         )
         // The picture is what is seen now; the source can vanish.
         anchor.alpha = 0f
@@ -837,7 +840,10 @@ class LiveDragController(
                 ?: (payload as? DragPayload.DrawerShortcut)
                     ?.let { host.installedApp(it.packageName, it.userSerial) }
                     ?.let { viewModel.appCatalog().iconFor(it) }
-                    ?.let { DragPicture(it.toBitmap(minSize, minSize), null) }
+                    ?.let { icon ->
+                        val (bitmap, outset) = iconPictureWithRoom(icon, minSize, minSize)
+                        DragPicture(bitmap, null, outset)
+                    }
         }
         is DragPayload.ExistingItem -> {
             val item = itemById(payload.itemId)
@@ -915,7 +921,8 @@ class LiveDragController(
         val w = rect.width().coerceAtLeast(1)
         val h = rect.height().coerceAtLeast(1)
         val grow = (minSize.toFloat() / max(w, h)).coerceAtLeast(1f)
-        return DragPicture(drawable.toBitmap((w * grow).toInt(), (h * grow).toInt()), rect)
+        val (bitmap, outset) = iconPictureWithRoom(drawable, (w * grow).toInt(), (h * grow).toInt())
+        return DragPicture(bitmap, rect, outset)
     }
 
     // The page can move under a finger that holds still: the desktop drifts
@@ -1274,9 +1281,9 @@ class LiveDragController(
         // A widget let go over the dock: findDragTarget keeps it off the dock,
         // and the fly-back alone didn't say why.
         val overDock = binding.dockBar.isShown && binding.dockBar.screenRect().contains(rawX.toInt(), rawY.toInt())
-        if (isWidgetPayload(payload) && overDock) {
-            android.widget.Toast.makeText(context, R.string.widget_not_in_dock, android.widget.Toast.LENGTH_SHORT)
-                .show()
+        if (overDock && !dockable(payload)) {
+            val why = if (isWidgetPayload(payload)) R.string.widget_not_in_dock else R.string.shortcut_not_in_dock
+            android.widget.Toast.makeText(context, why, android.widget.Toast.LENGTH_SHORT).show()
         }
         // Nowhere to land: an item flies back to where it came from; a drawer
         // app or a picker widget has no home on screen and just fades. An app
@@ -1306,14 +1313,23 @@ class LiveDragController(
 
     private fun markSettling(payload: DragPayload) {
         settlingItemId = (payload as? DragPayload.ExistingItem)?.itemId
+        settleRebound = false
     }
+
+    // Whether a rebind has placed the settling item since its drop.
+    private var settleRebound = false
 
     // An item still settling from its drop, or still being dragged: a
     // rebind that lands meanwhile adds its view hidden. Mid-drag one does
     // land when edit mode closes with infinite scroll on (every page is
     // rebuilt), and it put a copy of the dragged item back at its origin.
-    fun isSettling(itemId: String): Boolean =
-        itemId == settlingItemId || (activeDragPayload as? DragPayload.ExistingItem)?.itemId == itemId
+    fun isSettling(itemId: String): Boolean {
+        if (itemId == settlingItemId) {
+            settleRebound = true
+            return true
+        }
+        return (activeDragPayload as? DragPayload.ExistingItem)?.itemId == itemId
+    }
 
     // The dragged item's view as it is now. A rebind mid-drag replaces it,
     // and the old view, detached, never shows again: a missed drop faded at
@@ -1398,15 +1414,31 @@ class LiveDragController(
         // icon's item, taller or wider than a cell, does in the outer rows
         // and columns; the icon sits at the top of the item. In a cell too
         // small for it the icon is shrunk to fit, and lands at that size.
+        // A large icon lands on the 2x2 cells the hover outlined, at its
+        // own size: it brings its own view.
+        val (span, cells) = largeIconCells(payload, p)
         val need = host.desktopIconNeedPx(prefs)
-        val fit = iconFitScale(
-            cellSize(canvas.width, prefs.gridCols), cellSize(canvas.height, prefs.gridRows), need.width, need.height
+        val iconCellW = cellSize(canvas.width, prefs.gridCols)
+        val iconCellH = cellSize(canvas.height, prefs.gridRows)
+        val fit = iconFitScale(iconCellW, iconCellH, need.width, need.height)
+        val box = largeIconBoxPx(
+            span, iconCellW, iconCellH, (host.desktopIconBoxPx(prefs) * fit).roundToInt(),
+            (context.dp(ICON_ITEM_PADDING_DP) * fit).roundToInt()
         )
-        val box = (host.desktopIconBoxPx(prefs) * fit).roundToInt()
         val item = desktopItemFrame(prefs, box, fit)
-        val left = iconOrigin(p[2], canvas.width, item.width) + item.iconLeft
-        val top = iconOrigin(p[3], canvas.height, item.height) + item.iconTop
+        val centerX = cells?.let { (it.left + it.right) / 2f / prefs.gridCols } ?: p[2]
+        val centerY = cells?.let { (it.top + it.bottom) / 2f / prefs.gridRows } ?: p[3]
+        val left = iconOrigin(centerX, canvas.width, item.width) + item.iconLeft
+        val top = iconOrigin(centerY, canvas.height, item.height) + item.iconTop
         return RectF(left.toFloat(), top.toFloat(), (left + box).toFloat(), (top + box).toFloat())
+    }
+
+    // A dragged large icon's span and the cells it lands on; 1 and none for
+    // anything else.
+    private fun largeIconCells(payload: DragPayload, p: FloatArray): Pair<Int, WorkspaceGeometry.CellRect?> {
+        val item = (payload as? DragPayload.ExistingItem)?.let { itemById(it.itemId) }?.takeIf { it.isLargeIcon }
+            ?: return 1 to null
+        return item.spanX to drops.hoverTargetRect(payload, p[0].toInt(), p[1].toInt(), p[4], p[5])?.first
     }
 
     // A desktop item's size, and where its icon box sits inside it.
@@ -1459,34 +1491,41 @@ class LiveDragController(
         val dragged = activeDragPayload != null
         val sourcePage = dragSourcePage
         dragSourcePage = null
+        val source = currentDragSource(activeDragPayload)
         onDragEnded(accepted, flewBack)
-        revealSettled()
+        revealSettled(source)
         if (dragged) host.onDragFinished(sourcePage)
     }
 
     // The settled item's rebound view (workspace child or dock slot child)
     // was added hidden; show it now that the picture has arrived.
-    private fun revealSettled() {
+    // The view the item was picked up from stays hidden while the drop's
+    // rebind hasn't landed: it still stands at the old spot. With
+    // animations off the settle ends at once, before the model write, and
+    // showing it flashed the icon at its old cell (#297). The rebind then
+    // adds the item visible, settlingItemId being clear.
+    private fun revealSettled(source: View?) {
         val id = settlingItemId ?: return
         settlingItemId = null
-        forEachWorkspaceIcon { _, view -> if (view.getTag(R.id.tag_item_id) == id) view.alpha = 1f }
+        fun reveal(view: View) {
+            if (view.getTag(R.id.tag_item_id) == id && (view !== source || settleRebound)) view.alpha = 1f
+        }
+        forEachWorkspaceIcon { _, view -> reveal(view) }
         for (i in 0 until binding.dockBar.childCount) {
             val slot = binding.dockBar.getChildAt(i) as? ViewGroup ?: continue
-            for (c in 0 until slot.childCount) {
-                val child = slot.getChildAt(c)
-                if (child.getTag(R.id.tag_item_id) == id) child.alpha = 1f
-            }
+            for (c in 0 until slot.childCount) reveal(slot.getChildAt(c))
         }
     }
 
     // Adaptive icon animations: the workspace rocks gently while a drag
-    // is live, so the grid reads as editable. Each icon is offset a little so
+    // is live, so the grid reads as editable. Always, while the launcher's
+    // animations are on; there is no switch of its own. Each icon is offset a little so
     // the page doesn't sway as one block.
     private val wiggleAnimators = mutableListOf<android.animation.Animator>()
 
     private fun startIconWiggle() {
         val prefs = viewModel.state.value.prefs
-        if (!prefs.iconWiggle || !Animations.enabled(prefs)) return
+        if (!Animations.enabled(prefs)) return
         stopIconWiggle()
         val duration = Animations.duration(prefs, WIGGLE_MS)
         if (duration == 0L) return
@@ -1504,9 +1543,16 @@ class LiveDragController(
         }
     }
 
+    // A cancelled animator stays at its last frame, so every view it rocked
+    // is straightened here, not just those on the pages showing now: a
+    // widget's view is kept and reused across rebinds, and one off the
+    // showing pages when the drag ended kept its tilt until a restart (#316).
     private fun stopIconWiggle() {
         if (wiggleAnimators.isEmpty()) return
-        wiggleAnimators.forEach { it.cancel() }
+        wiggleAnimators.forEach { animator ->
+            animator.cancel()
+            ((animator as? android.animation.ObjectAnimator)?.target as? View)?.rotation = 0f
+        }
         wiggleAnimators.clear()
         forEachWorkspaceIcon { _, view -> view.rotation = 0f }
     }

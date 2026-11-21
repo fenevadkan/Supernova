@@ -78,6 +78,31 @@ class PictureFrameTest {
     }
 
     @Test
+    fun aRoundLegacyIconIsADisc() {
+        assertNotNull(PictureFrame.disc(picture { x, y -> inDisc(x, y, size * 0.46f) }, size))
+    }
+
+    @Test
+    fun aSquareTileIsNoDisc() {
+        assertNull(PictureFrame.disc(roundedSquare(margin = 8, radius = 16), size))
+    }
+
+    @Test
+    fun aSmallDiscOrARingIsNoDisc() {
+        assertNull(PictureFrame.disc(picture { x, y -> inDisc(x, y, size / 3f) }, size))
+        assertNull(PictureFrame.disc(picture { x, y -> inDisc(x, y, size / 2f) && !inDisc(x, y, size / 4f) }, size))
+    }
+
+    @Test
+    fun aShieldIsNoDisc() {
+        val shield = picture { x, y ->
+            val dx = kotlin.math.abs(x + 0.5f - size / 2f)
+            y >= 4 && y < size - 4 && dx <= (size / 2f - 4) * minOf(1f, (size - y) / (size * 0.5f))
+        }
+        assertNull(PictureFrame.disc(shield, size))
+    }
+
+    @Test
     fun aHexagonIsNoTile() {
         val hexagon = picture { x, y ->
             val dy = kotlin.math.abs(y + 0.5f - size / 2f)
@@ -94,6 +119,21 @@ class PictureFrameTest {
             y >= 4 && y < size - 4 && dx <= (size / 2f - 4) * minOf(1f, (size - y) / (size * 0.5f))
         }
         assertNull(PictureFrame.tile(shield, size))
+    }
+
+    @Test
+    fun aTileOrADiscIsOneSolidBody() {
+        assertTrue(PictureFrame.solid(roundedSquare(margin = 8, radius = 10), size))
+        assertTrue(PictureFrame.solid(picture { x, y -> inDisc(x, y, 40f) }, size))
+    }
+
+    @Test
+    fun aLogoMadeOfPiecesIsNoSolidBody() {
+        // Four blocks with clear lanes between them.
+        val blocks = picture { x, y -> x in 10..85 && y in 10..85 && x !in 42..53 && y !in 42..53 }
+
+        assertFalse(PictureFrame.solid(blocks, size))
+        assertFalse(PictureFrame.solid(IntArray(size * size), size))
     }
 
     @Test

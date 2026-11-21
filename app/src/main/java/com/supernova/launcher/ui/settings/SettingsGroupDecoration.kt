@@ -38,7 +38,6 @@ class SettingsGroupDecoration(context: Context, private val adapter: SettingsAda
     private val gutter = context.dp(GUTTER_DP)
     private val inset = context.dp(INSET_DP)
     private val groupGap = context.dp(GROUP_GAP_DP)
-    private val entryGap = context.dp(ENTRY_GAP_DP)
     // On a tiled page the search bar's own 8dp bottom padding makes up the
     // rest of the 24dp between it and the first card; a section page's list
     // starts under its toolbar or its preview card.
@@ -73,7 +72,6 @@ class SettingsGroupDecoration(context: Context, private val adapter: SettingsAda
         position == 0 -> firstGap
         adapter.isLabel(position - 1) -> 0
         !adapter.isGroupCard(position - 1) -> groupGap
-        adapter.isEntryCard(position) || adapter.isEntryCard(position - 1) -> entryGap
         else -> groupGap
     }
 
@@ -100,20 +98,33 @@ class SettingsGroupDecoration(context: Context, private val adapter: SettingsAda
             path.reset()
             path.addRoundRect(slice, radii, Path.Direction.CW)
             canvas.drawPath(path, cardPaint)
-            if (!last) {
-                canvas.drawRect(
-                    child.left.toFloat() + dividerStart, bottom - dividerHeight,
-                    child.right.toFloat(), bottom, dividerPaint
-                )
-            }
+            if (!last && !adapter.isBand(position)) drawDivider(canvas, child, dividerStart)
         }
+    }
+
+    // A nested row's band is its own background, which would cover its
+    // hairline, so those go on top.
+    override fun onDrawOver(canvas: Canvas, parent: RecyclerView, state: RecyclerView.State) {
+        val dividerStart = if (adapter.tiled) tiledDividerStart else dividerStart
+        for (i in 0 until parent.childCount) {
+            val child = parent.getChildAt(i)
+            val position = parent.getChildAdapterPosition(child)
+            if (position == RecyclerView.NO_POSITION || !adapter.isBand(position)) continue
+            if (!adapter.endsCard(position)) drawDivider(canvas, child, dividerStart)
+        }
+    }
+
+    private fun drawDivider(canvas: Canvas, child: View, start: Int) {
+        val bottom = child.bottom + child.translationY
+        canvas.drawRect(
+            child.left.toFloat() + start, bottom - dividerHeight, child.right.toFloat(), bottom, dividerPaint
+        )
     }
 
     private companion object {
         const val GUTTER_DP = 16
         const val INSET_DP = 4
         const val GROUP_GAP_DP = 24
-        const val ENTRY_GAP_DP = 12
         const val SEARCH_PADDING_DP = 8
         const val CORNER_DP = 20
         const val TILED_DIVIDER_START_DP = 72

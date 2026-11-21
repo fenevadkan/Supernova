@@ -16,7 +16,9 @@ class DrawerGroupsImportTest {
 
     private fun row(vararg values: Pair<String, Any?>) = Row(mapOf(*values))
 
-    private fun groups(tables: Map<String, List<Row>>) = DrawerGroupTables.read(BackupContents(tables = tables))
+    private fun read(tables: Map<String, List<Row>>) = DrawerGroupTables.read(BackupContents(tables = tables))
+
+    private fun groups(tables: Map<String, List<Row>>) = read(tables).orEmpty()
 
     // --- Reading
 
@@ -62,6 +64,34 @@ class DrawerGroupsImportTest {
         assertEquals(true, tab.keepInMain)
         assertEquals(listOf(ForeignApp("com.mail", "com.mail.Inbox", 0)), tab.apps)
         assertEquals(listOf(2L), tab.folders)
+    }
+
+    @Test
+    fun groupsSwitchedOffAreLeftOut() {
+        val read = groups(
+            mapOf(
+                "drawer_groups" to listOf(
+                    row("_id" to 2L, "title" to "Shown", "groupType" to "FOLDER_APP_GROUP", "flags" to 0L),
+                    // Other flags (a title of its own) leave it shown.
+                    row("_id" to 3L, "title" to "Renamed", "groupType" to "FOLDER_APP_GROUP", "flags" to 2L),
+                    row("_id" to 4L, "title" to "Off", "groupType" to "FOLDER_APP_GROUP", "flags" to 128L),
+                    row("_id" to 5L, "title" to "Off too", "groupType" to "TAB_APP_GROUP", "flags" to 384L)
+                ),
+                "appgroups" to listOf(
+                    row("groupId" to 2L, "component" to "com.a/.Main#-1"),
+                    row("groupId" to 3L, "component" to "com.b/.Main#-1"),
+                    row("groupId" to 4L, "component" to "com.c/.Main#-1"),
+                    row("groupId" to 5L, "component" to "com.d/.Main#-1")
+                )
+            )
+        )
+        assertEquals(listOf("Shown", "Renamed"), read.map { it.title })
+    }
+
+    @Test
+    fun noGroupTablesReadAsNone() {
+        assertNull(read(mapOf("favorites" to emptyList())))
+        assertEquals(emptyList<ForeignGroup>(), read(mapOf("drawer_groups" to emptyList(), "appgroups" to emptyList())))
     }
 
     @Test
@@ -157,7 +187,8 @@ class DrawerGroupsImportTest {
         val tabs = made.filter { it.type == DrawerGroupType.TAB }
         assertEquals(listOf("Tab A", "Tab B"), tabs.map { it.name })
         assertEquals(listOf(0, 1), tabs.map { it.order })
-        assertEquals(setOf("0/com.a/com.a.Main", TabFolders.keyOf("Chat")), tabs[0].members)
+        val chat = made.single { it.name == "Chat" }
+        assertEquals(setOf("0/com.a/com.a.Main", TabFolders.keyOf(chat.id)), tabs[0].members)
         assertEquals(false, tabs[0].keepInMain)
     }
 
@@ -176,7 +207,23 @@ class DrawerGroupsImportTest {
     }
 
     @Test
-    fun namesStayUniqueAndStorable() {
+    fun foldersKeepTheFoldersTheyHold() {
+        val made = DrawerGroupConverter.convert(
+            listOf(
+                group(1, "Social", folder = true, "com.a"),
+                ForeignGroup(2, "Travel", true, 1, folders = listOf(1, 2)),
+                ForeignGroup(3, "Holds gone", true, 2, folders = listOf(4)),
+                group(4, "Gone", folder = true, "com.gone")
+            ),
+            phone
+        )
+        assertEquals(listOf("Social", "Travel"), made.map { it.name })
+        val social = made.single { it.name == "Social" }
+        assertEquals(setOf(TabFolders.keyOf(social.id)), made.single { it.name == "Travel" }.members)
+    }
+
+    @Test
+    fun namesMayRepeatAndStayStorable() {
         val made = DrawerGroupConverter.convert(
             listOf(
                 group(1, "Fun", folder = true, "com.a"),
@@ -186,7 +233,8 @@ class DrawerGroupsImportTest {
             ),
             phone
         )
-        assertEquals(listOf("Fun", "fun 2", "Tab", "A/B"), made.map { it.name })
+        assertEquals(listOf("Fun", "fun", "Tab", "A/B"), made.map { it.name })
+        assertEquals(4, made.map { it.id }.toSet().size)
         made.forEach { assertEquals(it, DrawerGroup.decode(it.encode())) }
     }
 
@@ -207,11 +255,34 @@ class DrawerGroupsImportTest {
     }
 
     @Test
+    fun importDropsSmartFoldersAndTurnsThemOff() {
+        val stored = setOf(
+            DrawerGroup("Photos", setOf("0/p/p.Main"), type = DrawerGroupType.FOLDER, smart = true).encode(),
+            DrawerGroup("Mine", setOf("0/x/x.Main")).encode()
+        )
+        // Tables with nothing to bring count too: that drawer had none.
+        listOf(listOf(group(1, "Food", folder = true, "com.f")), emptyList()).forEach { groups ->
+            val prefs = LayoutConverter.convert(
+                ForeignLayout(emptyList(), ForeignGrid(), groups = groups),
+                LauncherPrefs(drawerGroups = stored),
+                phone
+            ).prefs
+            val names = prefs.drawerGroups.mapNotNull(DrawerGroup::decode).map { it.name }.toSet()
+            assertEquals(setOf("Mine") + groups.map { it.title }, names)
+            assertFalse(prefs.smartFolders)
+        }
+    }
+
+    @Test
     fun noGroupsLeavesStoredGroupsAlone() {
-        val stored = setOf(DrawerGroup("Mine", setOf("0/x/x.Main")).encode())
+        val stored = setOf(
+            DrawerGroup("Mine", setOf("0/x/x.Main")).encode(),
+            DrawerGroup("Photos", setOf("0/p/p.Main"), type = DrawerGroupType.FOLDER, smart = true).encode()
+        )
         val prefs = LayoutConverter.convert(
             ForeignLayout(emptyList(), ForeignGrid()), LauncherPrefs(drawerGroups = stored), phone
         ).prefs
         assertEquals(stored, prefs.drawerGroups)
+        assertTrue(prefs.smartFolders)
     }
 }

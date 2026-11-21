@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.supernova.launcher.R
 import com.supernova.launcher.databinding.SheetWidgetPickerBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -78,6 +79,7 @@ object WidgetPickerSheet {
         val singleApp = filterPackage != null
         binding.widgetSearch.visibility = if (singleApp) View.GONE else View.VISIBLE
         binding.widgetSearch.doAfterTextChanged { adapter.filter(it?.toString().orEmpty()) }
+        sayNoMatches(activity, binding, adapter)
         // Searching opens the sheet fully, above the keyboard.
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         binding.widgetSearch.setOnFocusChangeListener { _, focused ->
@@ -85,13 +87,15 @@ object WidgetPickerSheet {
         }
 
         activity.lifecycleScope.launch {
+            // The launcher's own actions are not search widgets either. Its
+            // row heads the list, so it shows at once while the apps load.
+            val own = if (singleApp || filter != null) null
+            else withContext(Dispatchers.Default) { WidgetPickerGroups.launcherGroup(activity, icons) }
+            own?.let { adapter.submit(listOf(it), expandAll = false) }
             val groups = withContext(Dispatchers.Default) {
-                val apps = WidgetPickerGroups.build(
+                listOfNotNull(own) + WidgetPickerGroups.build(
                     activity, cellWidthPx, cellHeightPx, cols, rows, filterPackage, filter, icons
                 )
-                // The launcher's own actions are not search widgets either.
-                if (singleApp || filter != null) apps
-                else listOf(WidgetPickerGroups.launcherGroup(activity, icons)) + apps
             }
             if (groups.isEmpty()) {
                 binding.widgetPickerEmpty.visibility = View.VISIBLE
@@ -101,6 +105,22 @@ object WidgetPickerSheet {
         }
 
         dialog.show()
+    }
+
+    // A search that found nothing says so, in the line an empty picker uses.
+    private fun sayNoMatches(
+        activity: AppCompatActivity,
+        binding: SheetWidgetPickerBinding,
+        adapter: WidgetPickerAdapter
+    ) {
+        adapter.onNoMatches = { none ->
+            if (!adapter.isEmpty) {
+                binding.widgetPickerEmpty.text = activity.getString(
+                    R.string.widget_search_no_matches, binding.widgetSearch.text.toString().trim()
+                )
+                binding.widgetPickerEmpty.visibility = if (none) View.VISIBLE else View.GONE
+            }
+        }
     }
 
     private const val OPAQUE = 0xFF

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A checkbox row in its card: the text 16dp in, the box centred in the
-     48dp control slot that ends 4dp in from the card, the column every
-     row's control sits in. -->
+<!-- A switch row in its card: the text 16dp in, the switch ending 16dp
+     in from the card. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:foreground="?attr/selectableItemBackground"
@@ -24,7 +24,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fontFamily="sans-serif-medium"
-            android:textColor="@color/textPrimary"
+            android:textColor="@color/settingsText"
             android:textSize="@dimen/text_body" />
 
         <!-- Most toggles are explained under the title. -->
@@ -33,20 +33,38 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_xxs"
-            android:textColor="@color/textSecondary"
+            android:textColor="@color/settingsTextSecondary"
             android:textSize="@dimen/text_secondary"
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- Checkboxes, not switches (F7); the id stays so the
-         adapter's CompoundButton handling is untouched. With no text the
-         box centres in its 48dp. -->
-    <com.google.android.material.checkbox.MaterialCheckBox
+    <!-- A switch with rows nested under it: the Label group's chevron and
+         divider, set by the adapter (#227). -->
+    <ImageView
+        android:id="@+id/settingChevron"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:layout_marginStart="@dimen/space_sm"
+        android:layout_marginEnd="@dimen/space_sm"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_chevron_down"
+        android:visibility="gone"
+        app:tint="@color/settingsTextSecondary" />
+
+    <View
+        android:id="@+id/settingDivider"
+        android:layout_width="1dp"
+        android:layout_height="32dp"
+        android:background="@color/settingsPageDivider"
+        android:visibility="gone" />
+
+    <!-- The id stays so the adapter's CompoundButton handling is untouched. -->
+    <androidx.appcompat.widget.SwitchCompat
         android:id="@+id/settingSwitch"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_marginStart="@dimen/space_md"
+        android:layout_marginEnd="@dimen/space_ms"
         android:clickable="false"
-        android:focusable="false"
-        android:minWidth="48dp" />
+        android:focusable="false" />
 </LinearLayout>

@@ -2,11 +2,13 @@
 <!-- Top hit: the best app match as a card - big icon, name, an app
      info gear - and, under a hairline, the app's shortcuts as pills. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:clipChildren="false"
+    android:clipToPadding="false"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_marginHorizontal="@dimen/space_md"
     android:layout_marginVertical="@dimen/space_sm"
-    android:background="@drawable/bg_feed_card"
+    android:background="@drawable/bg_search_top_hit"
     android:orientation="vertical"
     android:paddingHorizontal="@dimen/space_md"
     android:paddingTop="@dimen/space_ms"
@@ -14,6 +16,8 @@
 
     <LinearLayout
         android:id="@+id/topHitRow"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="?attr/selectableItemBackground"

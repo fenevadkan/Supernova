@@ -26,8 +26,8 @@ import com.supernova.launcher.ui.LabelFont
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
+import com.supernova.launcher.ui.NavBarButtons
 import com.supernova.launcher.ui.StatusBarIcons
-import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.theme.AccentColor
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.ThemeMode
@@ -134,8 +134,11 @@ object Pref {
     private const val LABEL_SIZE_MAX = 18
     private const val DAY_LAST_MINUTE = 1439
 
-    // Dock pages, and the feed's rows of shortcuts.
-    private const val PAGES_OR_ROWS_MAX = 3
+    // The feed's rows of shortcuts.
+    private const val FEED_SHORTCUT_ROWS_MAX = 3
+
+    // Dock pages; the settings slider reads it too.
+    const val DOCK_PAGES_MAX = 5
 
     private val specs = mutableListOf<PrefSpec<*>>()
     val all: List<PrefSpec<*>> get() = specs
@@ -182,7 +185,7 @@ object Pref {
     val desktopPaddingV = int("desktop_padding_v", 0..DESKTOP_PADDING_MAX)
     val desktopLocked = bool("desktop_locked")
     val dockEnabled = bool("dock_enabled")
-    val dockPages = int("dock_pages", 1..PAGES_OR_ROWS_MAX)
+    val dockPages = int("dock_pages", 1..DOCK_PAGES_MAX)
     val dockBgStyle = choice("dock_bg_style", DockBgStyle.entries)
     val dockBgOpacity = float("dock_bg_opacity", 0f..1f)
     val dockBgRadius = int("dock_bg_radius", 0..DOCK_BG_RADIUS_MAX)
@@ -205,6 +208,7 @@ object Pref {
     val drawerTabContent = choice("drawer_tab_content", DrawerTabContent.entries)
     val drawerTabAlign = choice("drawer_tab_align", DrawerTabAlign.entries)
     val drawerTabsNoSwipe = bool("drawer_tabs_no_swipe")
+    val drawerTabsLoop = bool("drawer_tabs_loop")
     val drawerFrequentRow = bool("drawer_frequent_row")
     val drawerRememberPosition = bool("drawer_remember_position")
     val drawerAutoClose = bool("drawer_auto_close")
@@ -225,7 +229,6 @@ object Pref {
     val drawerActionButtons = text("drawer_action_buttons")
     val drawerIsolateTabs = bool("drawer_isolate_tabs")
     val drawerSort = choice("drawer_sort", DrawerSort.entries)
-    val drawerTopRowSort = choice("drawer_top_row_sort", TopRowSort.entries)
     val drawerSortButtons = bool("drawer_sort_buttons")
     val drawerWorkTab = bool("drawer_work_tab")
     val drawerDefaultTab = text("drawer_default_tab")
@@ -250,10 +253,10 @@ object Pref {
     val badgeTextColor = text("badge_text_color")
     val badgeCornerRadius = int("badge_corner_radius", 0..BadgeLimits.CORNER_ROUND)
     val badgeOutline = bool("badge_outline")
+    val badgeOnCorner = bool("badge_on_corner")
     val folderPreviewStyle = choice("folder_preview_style", FolderPreviewStyle.entries)
     val folderPrioritizeFirst = bool("folder_prioritize_first")
     val folderColumns = int("folder_columns", 0..GridLimits.FOLDER_COLUMNS_BIG)
-    val folderSortAz = bool("folder_sort_az")
     val folderCloseOnLaunch = bool("folder_close_on_launch")
     val folderIconScale = float("folder_icon_scale", ICON_SCALE_MIN..ICON_SCALE_MAX)
     val folderMatchDesktop = bool("folder_match_desktop")
@@ -264,7 +267,6 @@ object Pref {
     val folderScroll = choice("folder_scroll", FolderScroll.entries)
     val folderIconShape = text("folder_icon_shape")
     val folderIconOutline = bool("folder_icon_outline")
-    val folderClipToBg = bool("folder_clip_to_bg")
     val folderMatchWindowColor = bool("folder_match_window_color")
     val folderPlateColor = text("folder_plate_color")
     val folderBadges = bool("folder_badges")
@@ -291,6 +293,7 @@ object Pref {
     val dockPaddingH = int("dock_padding_h")
     val dockPaddingV = int("dock_padding_v")
     val searchWebProvider = choice("search_web_provider", WebProvider.entries)
+    val searchWebCustomUrl = text("search_web_custom_url")
     val searchContacts = bool("search_contacts")
     val searchShortcuts = bool("search_shortcuts")
     val searchFolders = bool("search_folders")
@@ -309,6 +312,7 @@ object Pref {
     val homeSearch = bool("home_search")
     val homeButtonAction = text("home_button_action")
     val homeButtonOnMainPage = bool("home_button_on_main_page")
+    val homeReturnToDefaultPage = bool("home_return_to_default_page")
     val searchBarConfig = text("search_bar_config")
     val popupNotifications = bool("popup_notifications")
     val popupCardBg = bool("popup_card_bg")
@@ -325,19 +329,20 @@ object Pref {
     val hideStatusBar = bool("hide_status_bar")
     val darkStatusIcons = choice("dark_status_icons", StatusBarIcons.entries)
     val transparentNav = bool("transparent_nav")
-    val iconWiggle = bool("icon_wiggle")
+    val navBarButtons = choice("nav_bar_buttons", NavBarButtons.entries)
     val transparentStatus = bool("transparent_status")
     val homeRotation = bool("home_rotation")
     val homeOrientation = text("home_orientation")
     val feedEnabled = bool("feed_enabled")
     val feedEdgeSwipe = bool("feed_edge_swipe")
     val feedShowSearch = bool("feed_show_search")
+    val feedBarButtons = text("feed_bar_buttons")
     val feedShowFrequent = bool("feed_show_frequent")
     val feedShowShortcuts = bool("feed_show_shortcuts")
     val feedShowMedia = bool("feed_show_media")
     val feedShowCalendar = bool("feed_show_calendar")
     val feedShowContacts = bool("feed_show_contacts")
-    val feedShortcutRows = int("feed_shortcut_rows", 1..PAGES_OR_ROWS_MAX)
+    val feedShortcutRows = int("feed_shortcut_rows", 1..FEED_SHORTCUT_ROWS_MAX)
     val labsEnabled = bool("labs_enabled")
     val labsShowComponent = bool("labs_show_component")
     val labsExportPng = bool("labs_export_png")

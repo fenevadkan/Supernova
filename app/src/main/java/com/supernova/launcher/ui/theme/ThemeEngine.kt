@@ -2,6 +2,7 @@ package com.supernova.launcher.ui.theme
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Color
 import androidx.appcompat.app.AppCompatDelegate
 import com.supernova.launcher.R
 import com.supernova.launcher.data.SettingEnumSerializer
@@ -109,7 +110,7 @@ object ThemeEngine {
     private fun darkWithin(startMinute: Int, endMinute: Int, recheckIn: ((Long) -> Unit)?): Int {
         val now = java.util.Calendar.getInstance()
         val minute = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
-        val dark = com.supernova.launcher.feed.CardVisibility.minuteInRange(minute, startMinute, endMinute)
+        val dark = DayWindow.contains(minute, startMinute, endMinute)
         recheckIn?.invoke(nextBoundaryDelayMs(minute, startMinute, endMinute, now.get(java.util.Calendar.SECOND)))
         return if (dark) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
     }
@@ -135,4 +136,37 @@ object ThemeEngine {
 
     fun accentColor(context: Context, accent: AccentColor): Int =
         context.getColor(accent.colorRes)
+
+    // The settings screens' accent: the Settings style's own Accent when one
+    // is picked (any colour, #233), else the curated Accent color. Returns the
+    // colour applied, which the activity compares to know when to recreate.
+    // Call before setContentView.
+    fun applySettingsAccent(activity: Activity, prefs: com.supernova.launcher.data.LauncherPrefs): Int {
+        val custom = CustomAccent.settingsAccent(activity, prefs)
+        // The Settings style's Text rides the same override (#281).
+        val text = CustomAccent.textColors(activity, CustomAccent.settingsText(activity, prefs))
+        if (custom == null) {
+            overrideColors(activity, text)
+            applyAccent(activity, prefs.accentColor)
+            return accentColor(activity, prefs.accentColor)
+        }
+        val overlay = if (overrideColors(activity, text + CustomAccent.accentColors(activity, custom))) {
+            R.style.ThemeOverlay_Supernova_Custom
+        } else {
+            CustomAccent.nearest(activity, custom).overlayRes
+        }
+        activity.theme.applyStyle(overlay, true)
+        return custom
+    }
+
+    // A successful override also lays Material's PersonalizedColors overlay
+    // on the theme, pointing ~50 colours (the cursor, stock bars, ripples,
+    // text highlight, colorSurface...) at wallpaper-colour placeholders
+    // that are all white here. The app theme goes back over it; the
+    // overridden colour resources stay.
+    private fun overrideColors(activity: Activity, colors: Map<Int, Int>): Boolean {
+        val applied = CustomAccent.override(activity, colors)
+        if (applied) activity.theme.applyStyle(R.style.Theme_Supernova, true)
+        return applied
+    }
 }

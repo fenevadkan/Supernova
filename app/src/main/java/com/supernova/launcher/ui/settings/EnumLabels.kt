@@ -24,8 +24,8 @@ import com.supernova.launcher.ui.AnimationSpeed
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupExtraRow
 import com.supernova.launcher.ui.ScrollEffect
+import com.supernova.launcher.ui.NavBarButtons
 import com.supernova.launcher.ui.StatusBarIcons
-import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.WallpaperScrollMode
 import com.supernova.launcher.data.IconGlass
 import com.supernova.launcher.data.ReshapeLegacy
@@ -84,10 +84,8 @@ object EnumLabels {
 
     @StringRes
     fun of(speed: AnimationSpeed): Int = when (speed) {
-        AnimationSpeed.SLOW -> R.string.anim_speed_slow
-        AnimationSpeed.DEFAULT -> R.string.anim_speed_default
+        AnimationSpeed.RELAXED -> R.string.anim_speed_relaxed
         AnimationSpeed.FAST -> R.string.anim_speed_fast
-        AnimationSpeed.FASTER -> R.string.anim_speed_faster
     }
 
     @StringRes
@@ -107,8 +105,18 @@ object EnumLabels {
     @StringRes
     fun of(icons: StatusBarIcons): Int = when (icons) {
         StatusBarIcons.AUTO -> R.string.status_icons_auto
+        StatusBarIcons.WALLPAPER -> R.string.status_icons_wallpaper
         StatusBarIcons.LIGHT -> R.string.status_icons_dark
         StatusBarIcons.DARK -> R.string.status_icons_light
+    }
+
+    @StringRes
+    fun of(buttons: NavBarButtons): Int = when (buttons) {
+        NavBarButtons.STATUS_BAR -> R.string.nav_buttons_status_bar
+        NavBarButtons.AUTO -> R.string.status_icons_auto
+        NavBarButtons.WALLPAPER -> R.string.status_icons_wallpaper
+        NavBarButtons.LIGHT -> R.string.status_icons_dark
+        NavBarButtons.DARK -> R.string.status_icons_light
     }
 
     @StringRes
@@ -281,14 +289,6 @@ object EnumLabels {
     }
 
     @StringRes
-    fun of(sort: TopRowSort): Int = when (sort) {
-        TopRowSort.RECENTLY_USED -> R.string.sort_recently_used
-        TopRowSort.MOST_USED -> R.string.sort_most_used
-        TopRowSort.INSTALL_DATE -> R.string.sort_install
-        TopRowSort.ALPHA -> R.string.sort_alpha
-    }
-
-    @StringRes
     fun of(style: DockBgStyle): Int = when (style) {
         DockBgStyle.NONE -> R.string.dock_bg_none
         DockBgStyle.ROUNDED -> R.string.dock_bg_rounded
@@ -357,6 +357,7 @@ object EnumLabels {
         SurfaceId.DRAWER_SEARCH_BAR -> R.string.drawer_search_bar
         SurfaceId.SETTINGS -> R.string.settings
         SurfaceId.HOME -> R.string.settings_section_home
+        SurfaceId.CARDS -> R.string.style_cards
     }
 
     @StringRes
@@ -385,6 +386,7 @@ object EnumLabels {
         SearchBarPlacement.DOCK_ABOVE -> R.string.search_bar_above_dock
         SearchBarPlacement.DOCK_BELOW -> R.string.search_bar_below_dock
         SearchBarPlacement.PERSISTENT -> R.string.search_bar_persistent
+        SearchBarPlacement.TOP -> R.string.search_bar_top
         SearchBarPlacement.WIDGET -> R.string.search_bar_widget
     }
 

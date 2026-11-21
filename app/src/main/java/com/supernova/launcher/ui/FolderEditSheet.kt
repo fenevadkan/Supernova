@@ -8,6 +8,7 @@ import com.supernova.launcher.R
 import com.supernova.launcher.data.DrawerGroup
 import com.supernova.launcher.data.GalleryIconCodec
 import com.supernova.launcher.data.ItemType
+import com.supernova.launcher.data.LaunchableApp
 import com.supernova.launcher.data.LauncherItem
 import com.supernova.launcher.databinding.SheetAppEditBinding
 import kotlinx.coroutines.CoroutineScope
@@ -50,7 +51,7 @@ object FolderEditSheet {
         binding.editTitle.text = originalName.ifBlank { context.getString(R.string.folder) }
         binding.editLabel.setText(originalName)
         hideAppRows(binding)
-        bindIconRows(scope, viewModel, binding, icon, pickPhoto)
+        bindIconRows(scope, viewModel, binding, icon, pickPhoto, folderApps(viewModel, folder))
         val isFolder = folder.itemType == ItemType.FOLDER
 
         // Read live, so a re-open shows what a just-committed pick left.
@@ -88,6 +89,7 @@ object FolderEditSheet {
             onEditSwipe(true) { picked -> downLabel = picked; renderSwipes() }
         }
 
+        binding.cancelButton.setOnClickListener { dialog.dismiss() }
         binding.saveButton.setOnClickListener {
             val typed = binding.editLabel.text?.toString().orEmpty().trim()
             if (typed.isNotEmpty() && typed != originalName) {
@@ -128,18 +130,15 @@ object FolderEditSheet {
         binding.swipeToOpenRow.visibility = View.GONE
         binding.swipeUpRow.visibility = View.GONE
         binding.swipeDownRow.visibility = View.GONE
-        bindIconRows(scope, viewModel, binding, icon, pickPhoto)
+        bindIconRows(scope, viewModel, binding, icon, pickPhoto, viewModel.appsInGroup(group))
 
+        binding.cancelButton.setOnClickListener { dialog.dismiss() }
         binding.saveButton.setOnClickListener {
             val typed = binding.editLabel.text?.toString().orEmpty().trim()
-            val name = if (typed.isEmpty()) group.name else viewModel.renameGroup(group, typed)
-            if (name == null) {
-                Toast.makeText(context, R.string.group_name_taken, Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            if (typed.isNotEmpty()) viewModel.renameGroup(group, typed)
             if (icon.copy(raw = icon.savedRaw) != original) {
                 viewModel.setGroupIcon(
-                    name,
+                    group.id,
                     group.copy(
                         iconPack = icon.pack, iconName = icon.name, iconBase64 = icon.photo, iconRaw = icon.savedRaw
                     )
@@ -159,19 +158,26 @@ object FolderEditSheet {
         val savedRaw: Boolean get() = raw && isCustom
     }
 
+    // A folder's sheet keeps its name, icon and swipe rows; the preview,
+    // style and shape are an app's.
     private fun hideAppRows(binding: SheetAppEditBinding) {
+        binding.previewCard.visibility = View.GONE
         binding.hideLabelRow.visibility = View.GONE
         binding.shapeRow.visibility = View.GONE
         binding.variantRow.visibility = View.GONE
         binding.resetButton.visibility = View.GONE
     }
 
+    // The sheet's parts plus the folder's apps; the apps lead the picker.
+    @Suppress("LongParameterList")
     private fun bindIconRows(
         scope: CoroutineScope,
         viewModel: LauncherViewModel,
         binding: SheetAppEditBinding,
         icon: IconChoice,
-        pickPhoto: PhotoPicker
+        pickPhoto: PhotoPicker,
+        // The folder's apps, whose icons lead the picker's grids (#255).
+        apps: List<LaunchableApp>
     ) {
         val context = binding.root.context
         fun renderIcon() {
@@ -206,7 +212,7 @@ object FolderEditSheet {
             }
         }
         binding.iconRow.setOnClickListener {
-            IconPickerSheet.show(context, scope, viewModel, allowDefault = true, onPickPhoto = onPhoto) { pack, name ->
+            IconPickerSheet.show(context, scope, viewModel, onPickPhoto = onPhoto, folderApps = apps) { pack, name ->
                 icon.pack = pack
                 icon.name = name
                 // A pack icon (or a reset to default) replaces any photo.
@@ -214,6 +220,21 @@ object FolderEditSheet {
                 renderIcon()
             }
         }
+    }
+
+    // A home or dock folder's apps in its own order; shortcuts and a
+    // launcher action have no app icon to offer.
+    private fun folderApps(viewModel: LauncherViewModel, folder: LauncherItem): List<LaunchableApp> {
+        if (folder.itemType != ItemType.FOLDER) return emptyList()
+        val apps = viewModel.state.value.apps
+        return viewModel.folderMembers(folder.id)
+            .filter { it.itemType == ItemType.APP }
+            .mapNotNull { item ->
+                apps.firstOrNull {
+                    it.packageName == item.packageName && it.className == item.className &&
+                        it.userSerial == item.userSerial
+                }
+            }
     }
 
     private const val DISABLED_ALPHA = 0.5f

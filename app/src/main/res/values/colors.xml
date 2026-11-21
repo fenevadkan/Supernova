@@ -6,6 +6,13 @@
     <color name="drawerBackground">#FFFFFF</color>
     <color name="textPrimary">#11161D</color>
     <color name="textSecondary">#B011161D</color>
+    <!-- The settings pages' text: the theme's until the Settings style sets
+         Text, which overrides these at runtime (CustomAccent.textColors). -->
+    <color name="settingsText">@color/textPrimary</color>
+    <color name="settingsTextSecondary">@color/textSecondary</color>
+    <color name="settingsPageDivider">@color/settingsDivider</color>
+    <color name="settingsPageStepBg">@color/settingsStepBg</color>
+    <color name="settingsPageHighlight">@color/rippleHighlight</color>
 
     <!-- Drawn over the wallpaper, never over an app surface: stays light in
          both themes so labels survive a dark wallpaper in light mode. -->
@@ -62,6 +69,11 @@
     <!-- Text and icons on an accent-filled control (a pill button, a
          checked box). Every curated accent is dark enough for white. -->
     <color name="onAccent">#FFFFFFFF</color>
+    <!-- The custom accent's three colours (ThemeOverlay.Supernova.Custom),
+         overwritten at runtime; these values only show if that fails. -->
+    <color name="accentCustom">#2E89FF</color>
+    <color name="accentCustomText">#2E89FF</color>
+    <color name="onAccentCustom">#FFFFFFFF</color>
     <!-- A hairline around unfocused text fields; reads on both surfaces. -->
     <color name="textInputStroke">#4D808080</color>
     <!-- The app icons' background, the logo's warm paper. -->
@@ -70,6 +82,7 @@
          text, the progress segments' track, and the summaries. -->
     <color name="onboardingBackground">#0E1014</color>
     <color name="onboardingText">#DBFFFFFF</color>
+    <color name="onboardingTextQuiet">#9EFFFFFF</color>
     <color name="onboardingTrack">#38FFFFFF</color>
     <color name="onboardingSummary">#B8FFFFFF</color>
 </resources>

@@ -20,7 +20,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -47,9 +46,11 @@ import com.supernova.launcher.data.Pref
 import com.supernova.launcher.data.PrefWrite
 import com.supernova.launcher.databinding.ActivityOnboardingBinding
 import com.supernova.launcher.runLogged
+import com.supernova.launcher.ui.AnimationScale
 import com.supernova.launcher.ui.LabelFont
 import com.supernova.launcher.ui.LauncherViewModel
 import com.supernova.launcher.ui.WideScreen
+import com.supernova.launcher.ui.settings.AboutLinks
 import com.supernova.launcher.ui.settings.EnumLabels
 import com.supernova.launcher.ui.settings.preview.MiniGridView
 import com.supernova.launcher.ui.theme.AccentColor
@@ -69,8 +70,8 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
-// The first-run wizard. A welcome page (Design my homescreen, Restore
-// backup, Skip setup), then six choices - a starting look, a colour, the
+// The first-run wizard. A welcome page (the import line, Design my home
+// screen, the privacy policy), then six choices - a starting look, a colour, the
 // icons' shape and finish, how much a page holds, and the app names - each
 // a few tiles under a live preview of the home screen over the real
 // wallpaper, and last the finished home with Set as my home screen. Every
@@ -107,18 +108,17 @@ class OnboardingActivity : AppCompatActivity() {
     // the shape's).
     private var liveText: Pair<TextView, (LauncherPrefs) -> CharSequence>? = null
 
-    // What Set as my home screen does once the default-home prompt answers.
-    private var afterHomeRole: (() -> Unit)? = null
-
     // The backup brought its own home screen and settings: nothing is left
-    // to set up.
-    private val backup = com.supernova.launcher.ui.BackupTransfer(this, { viewModel }, onImported = ::finishOnboarding)
+    // to set up but making it the home app, as the last page would.
+    private val backup = com.supernova.launcher.ui.BackupTransfer(
+        this, { viewModel }, onImported = { askHomeRoleThen { finishOnboarding(askAnimations = false) } }
+    )
 
+    // What Set as my home screen does once the default-home prompt answers
+    // waits in OnboardingHomeHandover, which the home screen can answer too.
     private val requestHomeRole =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            val then = afterHomeRole
-            afterHomeRole = null
-            then?.invoke()
+            OnboardingHomeHandover.answered(this)?.invoke()
         }
 
     // A choice just tapped, as the settings will be once its write lands:
@@ -145,8 +145,10 @@ class OnboardingActivity : AppCompatActivity() {
         setUpPreview()
 
         binding.onboardingWelcome.welcomeGetStarted.setOnClickListener { goTo(STEP_LOOK) }
-        binding.onboardingWelcome.welcomeRestore.setOnClickListener { backup.pickImportFile() }
-        binding.onboardingWelcome.welcomeSkip.setOnClickListener { finishOnboarding() }
+        binding.onboardingWelcome.welcomeImport.setOnClickListener { backup.pickImportFile() }
+        binding.onboardingWelcome.welcomePrivacy.setOnClickListener {
+            AboutLinks.open(this, getString(R.string.about_privacy_url))
+        }
         binding.onboardingBack.setOnClickListener { goTo(step - 1) }
         binding.onboardingSkip.setOnClickListener { goTo(STEP_DONE) }
         binding.onboardingNext.setOnClickListener {
@@ -156,10 +158,9 @@ class OnboardingActivity : AppCompatActivity() {
             when {
                 step > STEP_WELCOME -> goTo(step - 1)
                 isRerun -> finish()
-                // The first run can't be backed out of either; this points
-                // at the way to skip it.
-                else -> Toast.makeText(this@OnboardingActivity, R.string.onboarding_skip_hint, Toast.LENGTH_SHORT)
-                    .show()
+                // The first run can't be backed out of: Back stays on the
+                // welcome page.
+                else -> Unit
             }
         }
         repeat(CHOICE_STEPS) {
@@ -686,7 +687,7 @@ class OnboardingActivity : AppCompatActivity() {
             mini.set(rows, cols)
             column.addView(mini, LinearLayout.LayoutParams(dp(GRID_W_DP), dp(GRID_H_DP)))
             column.addView(TextView(this).apply {
-                text = getString(R.string.onboarding_grid_size, cols, rows)
+                text = getString(R.string.onboarding_grid_size, rows, cols)
                 setTextColor(getColor(R.color.onboardingSummary))
                 textSize = SMALL_SP
             }, tiles.wrap().apply { topMargin = dp(OnboardingTiles.GAP_DP) })
@@ -757,16 +758,26 @@ class OnboardingActivity : AppCompatActivity() {
             then()
             return
         }
-        afterHomeRole = then
+        OnboardingHomeHandover.asked(this, then)
         runLogged("ask for home role") { requestHomeRole.launch(request) }.onFailure {
-            afterHomeRole = null
-            then()
+            OnboardingHomeHandover.answered(this)?.invoke()
         }
     }
 
-    private fun finishOnboarding() {
+    private fun finishRun() {
+        finish()
+        OnboardingHomeHandover.finished(this)
+    }
+
+    // askAnimations: false once answered, and for a restored backup, which
+    // brings its own animation setting.
+    private fun finishOnboarding(askAnimations: Boolean = true) {
         if (isRerun) {
-            finish()
+            finishRun()
+            return
+        }
+        if (askAnimations && AnimationScale.systemAnimationsOff(this)) {
+            askAnimationsThen { finishOnboarding(askAnimations = false) }
             return
         }
         lifecycleScope.launch {
@@ -780,7 +791,15 @@ class OnboardingActivity : AppCompatActivity() {
                 viewModel.seedDefaultLayout()
                 viewModel.markOnboardingComplete()
             }
-            finish()
+            finishRun()
+        }
+    }
+
+    // AnimationsQuestion, on the home screen when it finished this run.
+    private fun askAnimationsThen(then: () -> Unit) {
+        AnimationsQuestion.ask(OnboardingHomeHandover.dialogHost(this) ?: this) { off ->
+            viewModel.setAll(listOf(PrefWrite(Pref.disableAnimations, off)))
+            then()
         }
     }
 

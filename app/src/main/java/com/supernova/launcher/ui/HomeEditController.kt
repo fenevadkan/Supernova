@@ -51,8 +51,8 @@ class HomeEditController(
         // for the page it stands for, and runs `then` once edit mode has
         // closed on that page.
         fun setAddPageSlot(show: Boolean)
-        // Remove page, beside the marker: offered on an empty page while
-        // there is another to fall back on.
+        // Remove page, beside the marker: offered while there is another
+        // page to fall back on; a page with content goes with an Undo bar.
         fun canRemoveCurrentPage(): Boolean
         fun removeCurrentPage()
         fun onAddPage(): Boolean
@@ -100,22 +100,25 @@ class HomeEditController(
             binding.editWidgetRecycler.setPadding(
                 0, 0, 0, (24 * density).toInt() + maxOf(barInsets.bottom, keyboard)
             )
-            // Expanded, the sheet stops under the status bar rather than
-            // running its handle up into it: a sheet ends its parent's height
-            // minus this margin, and opens to its own height.
-            (view.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { params ->
-                if (params.topMargin != barInsets.top) {
-                    params.topMargin = barInsets.top
-                    view.layoutParams = params
-                }
-            }
+            fitSheetHeight()
             overlay?.let(::applyOverlayInsets)
             insets
+        }
+        // The parent's height can change after the insets land (first layout,
+        // rotation, split screen); the sheet's height follows it.
+        binding.root.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) binding.root.post { fitSheetHeight() }
         }
         binding.editWidgetRecycler.layoutManager = LinearLayoutManager(activity)
         binding.editWidgetRecycler.adapter = adapter
         binding.editWidgetRecycler.itemAnimator = null
         binding.editWidgetSearch.doAfterTextChanged { adapter.filter(it?.toString().orEmpty()) }
+        adapter.onNoMatches = { none ->
+            binding.editWidgetNoMatches.text = activity.getString(
+                R.string.widget_search_no_matches, binding.editWidgetSearch.text.toString().trim()
+            )
+            binding.editWidgetNoMatches.visibility = if (none) View.VISIBLE else View.GONE
+        }
         // Searching opens the sheet fully: at its peek the keyboard covered
         // both the field and the list.
         binding.editWidgetSearch.setOnFocusChangeListener { _, focused ->
@@ -150,11 +153,26 @@ class HomeEditController(
         }
     }
 
-    private fun applyOverlayInsets(ov: ViewEditModeBinding) {
-        for (view in listOf(ov.editHomeMarker, ov.editRemovePage)) {
-            (view.layoutParams as FrameLayout.LayoutParams).topMargin = barInsets.top + activity.dp(8)
-            view.requestLayout()
+    // Expanded, the sheet stops under the status bar rather than running its
+    // handle up into it: a sheet opens to its own height, so it is the parent's
+    // height less the bar. Not a top margin: the behaviour adds a margin to
+    // the collapsed sheet when it lays it out but not when it settles after a
+    // drag, so the sheet came back a status bar higher, over the chips (#161).
+    private fun fitSheetHeight() {
+        val sheet = binding.editWidgetSheet
+        val parentHeight = binding.root.height
+        if (parentHeight <= 0) return
+        val height = parentHeight - barInsets.top
+        val params = sheet.layoutParams
+        if (params.height != height) {
+            params.height = height
+            sheet.layoutParams = params
         }
+    }
+
+    private fun applyOverlayInsets(ov: ViewEditModeBinding) {
+        (ov.editPageButtons.layoutParams as FrameLayout.LayoutParams).topMargin = barInsets.top + activity.dp(8)
+        ov.editPageButtons.requestLayout()
     }
 
     fun enter() {
@@ -195,12 +213,9 @@ class HomeEditController(
         val rootHeight = binding.root.height
         // The sheet runs under the navigation bar, so the bar's height is
         // added: what shows above it is the same on gesture and 3-button nav.
-        // Its top margin (the status bar, see the insets listener) moves the
-        // collapsed sheet down by as much, so that goes back on too.
         val peek = (rootHeight * PEEK_FRACTION).toInt() + barInsets.bottom
-        val topMargin =
-            (binding.editWidgetSheet.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.topMargin ?: 0
-        behavior.peekHeight = peek + topMargin
+        fitSheetHeight()
+        behavior.peekHeight = peek
         val chips = ov.editChips
         (chips.layoutParams as FrameLayout.LayoutParams).bottomMargin = peek + activity.dp(12)
         chips.requestLayout()
@@ -214,7 +229,7 @@ class HomeEditController(
         val pager = binding.workspacePager
         // The page's top edge moves down to clear the marker; its bottom must
         // clear the chips, which fixes the scale.
-        val markerBottom = (ov.editHomeMarker.layoutParams as FrameLayout.LayoutParams).topMargin +
+        val markerBottom = (ov.editPageButtons.layoutParams as FrameLayout.LayoutParams).topMargin +
             ov.editHomeMarker.layoutParams.height
         val shift = (markerBottom + activity.dp(10) - pager.top).coerceAtLeast(0)
         val chipsTop = rootHeight - peek - activity.dp(12) - chipHeight
@@ -249,6 +264,10 @@ class HomeEditController(
         }
         activity.window.navigationBarColor = surface
         binding.navBarBand.setBackgroundColor(surface)
+        // Buttons that read on the sheet's colour, whatever the home choice.
+        androidx.core.view.WindowInsetsControllerCompat(activity.window, binding.root)
+            .isAppearanceLightNavigationBars =
+            androidx.core.graphics.ColorUtils.calculateLuminance(surface) > LIGHT_SURFACE
 
         binding.editWidgetSearch.setText("")
         behavior.state = BottomSheetBehavior.STATE_COLLAPSED
@@ -256,12 +275,18 @@ class HomeEditController(
         activity.lifecycleScope.launch {
             val (cellWidth, cellHeight) = host.cellSizePx()
             val (cols, rows) = host.grid()
-            val groups = withContext(Dispatchers.Default) {
-                val icons = WidgetPickerIcons.of(viewModel.appCatalog())
-                listOf(WidgetPickerGroups.launcherGroup(activity, icons)) +
-                    WidgetPickerGroups.build(activity, cellWidth, cellHeight, cols, rows, icons = icons)
+            val icons = WidgetPickerIcons.of(viewModel.appCatalog())
+            // The launcher's own row heads the list and is all that shows
+            // as the sheet rises, so the first time it goes in at once; the
+            // apps follow. Later the last list stays until the new one is
+            // ready: cut to one row, the sheet lost its place and came back
+            // at the top every time.
+            val own = withContext(Dispatchers.Default) { WidgetPickerGroups.launcherGroup(activity, icons) }
+            if (isOpen && adapter.isEmpty) adapter.submit(listOf(own), expandAll = false)
+            val apps = withContext(Dispatchers.Default) {
+                WidgetPickerGroups.build(activity, cellWidth, cellHeight, cols, rows, icons = icons)
             }
-            if (isOpen) adapter.submit(groups, expandAll = false)
+            if (isOpen) adapter.submit(listOf(own) + apps, expandAll = false)
         }
     }
 
@@ -289,6 +314,8 @@ class HomeEditController(
         activity.window.navigationBarColor =
             if (prefs.transparentNav) android.graphics.Color.TRANSPARENT else android.graphics.Color.BLACK
         binding.navBarBand.setBackgroundColor(android.graphics.Color.BLACK)
+        androidx.core.view.WindowInsetsControllerCompat(activity.window, binding.root)
+            .isAppearanceLightNavigationBars = SystemBarIcons.lightNavBar(activity, prefs)
         // Contrast scrim control is Android 10+; Android 9 keeps its default.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             activity.window.isNavigationBarContrastEnforced = !prefs.transparentNav
@@ -339,5 +366,6 @@ class HomeEditController(
         const val PEEK_FRACTION = 0.22f
         const val ZOOM_MS = 220L
         const val OPAQUE = 0xFF
+        const val LIGHT_SURFACE = 0.5
     }
 }

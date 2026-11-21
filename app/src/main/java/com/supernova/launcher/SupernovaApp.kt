@@ -3,8 +3,13 @@ package com.supernova.launcher
 import android.app.Application
 import android.util.Log
 import com.supernova.launcher.data.DeviceProfile
+import com.supernova.launcher.ui.AnimationScale
 import com.supernova.launcher.ui.theme.ThemeEngine
 import com.supernova.launcher.ui.theme.ThemeMode
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.io.File
 
@@ -17,7 +22,19 @@ class SupernovaApp : Application() {
         super.onCreate()
         installCrashHandler()
         Diagnostics.install(this)
+        com.supernova.launcher.data.StoreRecovery.install(this)
         applyStoredTheme()
+        followLauncherAnimations()
+    }
+
+    // The launcher's animations follow its own switch, whatever the
+    // system's animation setting (ui/AnimationScale).
+    private fun followLauncherAnimations() {
+        AnimationScale.install(this)
+        MainScope().launch {
+            graph.preferences.flow.map { !it.disableAnimations }.distinctUntilChanged()
+                .collect(AnimationScale::setLauncherAnimations)
+        }
     }
 
     // Night mode must be set before the first activity inflates anything, so
@@ -29,6 +46,11 @@ class SupernovaApp : Application() {
                 // Before the first snapshot, so the launcher's first frame is
                 // already on the grid this screen deserves.
                 preferences.applyDeviceProfileOnce(DeviceProfile.forDevice(this@SupernovaApp))
+                // An unreadable store came back empty: the newest automatic
+                // backup goes in before anything reads the settings.
+                com.supernova.launcher.data.StoreRecovery.recover(
+                    this@SupernovaApp, graph.repository, preferences, graph.catalog
+                )
                 preferences.snapshot()
             }
             ThemeEngine.applyMode(this@SupernovaApp, prefs)

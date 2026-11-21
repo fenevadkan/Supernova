@@ -7,10 +7,11 @@ import com.supernova.launcher.data.SettingEnumSerializer
 // Master animation switch. Every animation the launcher owns (launch reveal,
 // folder/popup transitions, drag fades, page effects, search fade, wallpaper
 // zoom) consults this at its site; system-driven animations are unaffected.
-// The system's "Remove animations" (animator scale 0) turns them off too:
-// an animator would only jump to its end then, but scroller-driven motion
-// (page flips, smooth scrolls, sheet settles) ignores the scale and played
-// on regardless.
+// The system's animation setting doesn't: while this switch is on,
+// AnimationScale runs the launcher's animators at 1 even with the system's
+// scale at 0. The scale check below is the fallback should the platform
+// refuse that; an animator at scale 0 only jumps to its end, while
+// scroller-driven motion (page flips, smooth scrolls) would play on.
 object Animations {
     fun enabled(prefs: LauncherPrefs): Boolean = !prefs.disableAnimations && ValueAnimator.areAnimatorsEnabled()
 
@@ -24,21 +25,30 @@ object Animations {
 
     // Whether a jump to another page (home press, page action, desktop
     // previews, a drag's edge flip) or a list's paging scrolls there or lands
-    // at once. Scrollers ignore the system animator scale; enabled() checks it.
+    // at once.
     fun scrollPages(prefs: LauncherPrefs): Boolean = enabled(prefs)
+
+    // Whether home page swipes play the chosen scroll effect. Only the
+    // launcher's own switch turns it off: the effect follows the finger and
+    // the scroller's settle, neither of which the system scale slows, so it
+    // plays with the system's animations removed too.
+    fun pageEffects(prefs: LauncherPrefs): Boolean = !prefs.disableAnimations
 }
 
-// Playback speed for launcher-owned animations. DEFAULT keeps the tuned
-// durations; the others scale them. "Disable animations" stays the on/off gate.
+// Playback speed for launcher-owned animations. RELAXED keeps the tuned
+// durations; FAST plays them in about half the time. "Disable animations"
+// stays the on/off gate.
 @kotlinx.serialization.Serializable(with = AnimationSpeed.Names::class)
 enum class AnimationSpeed(val factor: Float) {
-    SLOW(1.6f),
-    DEFAULT(1.0f),
-    FAST(0.6f),
-    FASTER(0.35f);
+    RELAXED(1.0f),
+    FAST(0.5f);
 
-    // Its name in the store and in a backup, read back leniently.
-    object Names : SettingEnumSerializer<AnimationSpeed>("AnimationSpeed", entries, DEFAULT)
+    // Its name in the store and in a backup, read back leniently. The four
+    // speeds before these two map to the nearer one.
+    object Names : SettingEnumSerializer<AnimationSpeed>(
+        "AnimationSpeed", entries, RELAXED,
+        aliases = mapOf("SLOW" to RELAXED, "DEFAULT" to RELAXED, "FASTER" to FAST)
+    )
 
     companion object {
         fun fromName(name: String): AnimationSpeed = Names.parse(name)
@@ -98,11 +108,13 @@ enum class DrawerTransition {
 }
 
 // Forced status-bar icon tint (darkStatusIcons pref). AUTO follows the theme
-// (light theme = dark icons); LIGHT forces APPEARANCE_LIGHT_STATUS_BARS on
-// (dark icons), DARK forces it off (light icons).
+// (light theme = dark icons); WALLPAPER asks the wallpaper whether dark text
+// reads on it (ui/WallpaperStatusIcons); LIGHT forces
+// APPEARANCE_LIGHT_STATUS_BARS on (dark icons), DARK forces it off (light icons).
 @kotlinx.serialization.Serializable(with = StatusBarIcons.Names::class)
 enum class StatusBarIcons {
     AUTO,
+    WALLPAPER,
     LIGHT,
     DARK;
 
@@ -111,6 +123,25 @@ enum class StatusBarIcons {
 
     companion object {
         fun fromName(name: String): StatusBarIcons = Names.parse(name)
+    }
+}
+
+// Navigation bar button tint (navBarButtons pref): STATUS_BAR uses whatever
+// the status bar choice is; the rest mean what StatusBarIcons' do (LIGHT is
+// the light-bar appearance, i.e. dark buttons).
+@kotlinx.serialization.Serializable(with = NavBarButtons.Names::class)
+enum class NavBarButtons {
+    STATUS_BAR,
+    AUTO,
+    WALLPAPER,
+    LIGHT,
+    DARK;
+
+    // Its name in the store and in a backup, read back leniently.
+    object Names : SettingEnumSerializer<NavBarButtons>("NavBarButtons", entries, AUTO)
+
+    companion object {
+        fun fromName(name: String): NavBarButtons = Names.parse(name)
     }
 }
 

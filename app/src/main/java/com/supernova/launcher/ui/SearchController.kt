@@ -71,7 +71,11 @@ class SearchController(
     // screen.
     private val onAppLongPress: (View, LaunchableApp) -> Unit = { _, _ -> },
     private val onShortcutLongPress: (View, SearchResult.Shortcut) -> Unit = { _, _ -> },
-    private val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> }
+    private val onFolderLongPress: (View, SearchResult.Folder) -> Unit = { _, _ -> },
+    // The private space's row: its name while the phone has one, and its
+    // icon. onOpenFolder opens it.
+    private val privateSpaceLabel: () -> String? = { null },
+    private val privateSpaceIcon: () -> android.graphics.drawable.Drawable? = { null }
 ) {
 
     private var overlay: ViewSearchOverlayBinding? = null
@@ -112,7 +116,9 @@ class SearchController(
         var appliedStyle: List<Any?>? = null
         val orchestrator: SearchOrchestrator = buildOrchestrator(cards != null)
         val adapter: SearchResultsAdapter =
-            SearchResultsAdapter(viewModel.appCatalog(), adapterCallbacks(this)).also { created ->
+            SearchResultsAdapter(viewModel.appCatalog(), adapterCallbacks(this)) {
+                viewModel.state.value.pausedWorkProfiles
+            }.also { created ->
                 cards?.let(created::setCardBinder)
                 results.adapter = created
                 results.itemAnimator = null
@@ -222,6 +228,9 @@ class SearchController(
         onShown(!windowMode())
         showZeroState()
         loadRecentQueries()
+        // From the top, where Recent searches sit, whatever was scrolled to
+        // last time.
+        ui.searchResults.scrollToPosition(0)
         ui.root.visibility = View.VISIBLE
         ui.root.animate().cancel()
         val backdrop = binding.searchBackdrop
@@ -249,9 +258,13 @@ class SearchController(
         }
     }
 
+    // The top hit's shortcuts by app, for as long as the window is open.
+    private val topHitShortcuts = HashMap<String, List<SearchResult.Shortcut>>()
+
     fun hide() {
         if (!isOpen) return
         isOpen = false
+        topHitShortcuts.clear()
         onHidden()
         val ui = overlay ?: return
         overlaySurface?.orchestrator?.cancel()
@@ -329,8 +342,10 @@ class SearchController(
         binding.searchBackdrop.setOnClickListener { hide() }
 
         // The window is adjustNothing and edge-to-edge, so the panel pads
-        // itself out of the system bars; the IME is allowed to overlap, as it
-        // is in the drawer.
+        // itself out of the system bars. The keyboard overlaps the panel, but
+        // the results pad past it: a list that nearly fits can't be dragged,
+        // so the drag that drops the keyboard never came and its last rows
+        // stayed under it (#284).
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -342,7 +357,11 @@ class SearchController(
             )
             view.setPadding(bars.left + gutter, bars.top, bars.right + gutter, 0)
             val density = view.resources.displayMetrics.density
-            ui.searchResults.setPadding(0, 0, 0, (24 * density).toInt() + bars.bottom)
+            // The floating window stops short of the screen's bottom: only
+            // the part of the keyboard that rises past its edge covers it.
+            val windowGap = (ui.root.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom - windowGap
+            ui.searchResults.setPadding(0, 0, 0, (24 * density).toInt() + maxOf(bars.bottom, ime))
             insets
         }
         root.requestApplyInsets()
@@ -353,6 +372,19 @@ class SearchController(
             onEmptyQuery = { showZeroState() }
         )
         overlaySurface = surface
+
+        // A finger drag on the results takes the keyboard down, as in the
+        // drawer, so the whole list can be read.
+        ui.searchResults.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: androidx.recyclerview.widget.RecyclerView, newState: Int) {
+                if (newState == androidx.recyclerview.widget.RecyclerView.SCROLL_STATE_DRAGGING &&
+                    ui.searchInput.hasFocus()
+                ) {
+                    ui.searchInput.clearFocus()
+                    imm()?.hideSoftInputFromWindow(ui.searchInput.windowToken, 0)
+                }
+            }
+        })
 
         ui.searchInput.doAfterTextChanged { text ->
             if (suppressQueryEvents) return@doAfterTextChanged
@@ -376,9 +408,10 @@ class SearchController(
             MathSearchProvider(),
             appProvider,
             com.supernova.launcher.search.FolderSearchProvider(folderHits, folderIcon),
+            com.supernova.launcher.search.PrivateSpaceSearchProvider(privateSpaceLabel, privateSpaceIcon),
             com.supernova.launcher.search.CardSearchProvider { viewModel.feedCards() },
             WebSearchProvider(
-                provider = { viewModel.state.value.prefs.searchWebProvider },
+                provider = { com.supernova.launcher.search.WebEngine.of(viewModel.state.value.prefs) },
                 chips = { SearchChip.decode(viewModel.state.value.prefs.searchChips) }
             )
         )
@@ -449,10 +482,10 @@ class SearchController(
         surface.appliedStyle = key
         val styles = Styles.resolve(binding.root.context, prefs)
         val plate = styles.of(SurfaceId.DRAWER)
-        val popup = styles.of(SurfaceId.POPUP)
+        val cards = styles.of(SurfaceId.CARDS)
         surface.adapter.columns = columns
-        surface.adapter.setAppearance(prefs, plate.accent, plate.text, popup.surface, popup.text)
-        surface.cards?.setAppearance(popup.surface, popup.text, popup.accent)
+        surface.adapter.setAppearance(prefs, plate.accent, plate.text, cards.surface, cards.text)
+        surface.cards?.setAppearance(cards.surface, cards.text, cards.accent)
     }
 
     // Inline completion: when the best match starts with what was
@@ -492,17 +525,22 @@ class SearchController(
         val app = (results.firstOrNull { it is SearchResult.App } as? SearchResult.App)?.app ?: return null
         if (!app.label.startsWith(query, ignoreCase = true)) return null
         val catalog = viewModel.appCatalog()
-        val shortcuts = catalog.shortcutsFor(app.packageName, app.userSerial)
-            .take(TOP_HIT_MAX_SHORTCUTS)
-            .map { shortcut ->
-                SearchResult.Shortcut(
-                    packageName = app.packageName,
-                    shortcutId = shortcut.id,
-                    label = (shortcut.shortLabel ?: shortcut.longLabel ?: shortcut.id).toString(),
-                    userSerial = app.userSerial,
-                    icon = catalog.shortcutIcon(shortcut)
-                )
-            }
+        // Asked once per app while the window is open: each keystroke used
+        // to read the app's shortcuts and their icons again, on the main
+        // thread, for the same app.
+        val shortcuts = topHitShortcuts.getOrPut("${app.userSerial}/${app.packageName}") {
+            catalog.shortcutsFor(app.packageName, app.userSerial)
+                .take(TOP_HIT_MAX_SHORTCUTS)
+                .map { shortcut ->
+                    SearchResult.Shortcut(
+                        packageName = app.packageName,
+                        shortcutId = shortcut.id,
+                        label = (shortcut.shortLabel ?: shortcut.longLabel ?: shortcut.id).toString(),
+                        userSerial = app.userSerial,
+                        icon = catalog.shortcutIcon(shortcut)
+                    )
+                }
+        }
         return SearchResultsAdapter.TopHit(app, shortcuts)
     }
 
@@ -539,8 +577,8 @@ class SearchController(
                 surface.dismiss()
             }
             else -> {
-                val provider = viewModel.state.value.prefs.searchWebProvider
-                if (onOpenUri(provider.searchUrl(query), null)) surface.dismiss()
+                val engine = com.supernova.launcher.search.WebEngine.of(viewModel.state.value.prefs)
+                if (onOpenUri(engine.searchUrl(query), null)) surface.dismiss()
             }
         }
     }
@@ -608,12 +646,14 @@ class SearchController(
         val frequent = viewModel.recentApps(gridColumns())
         val shortcuts = SuggestedShortcuts.pills(viewModel)
         // Folder members live inside their folder, as in the drawer.
-        val groups = viewModel.drawerFolderGroups().filter { viewModel.drawerFolderApps(it).isNotEmpty() }
+        // A folder inside another (#229) lives inside it too.
+        val groups = viewModel.drawerFolderGroups().filter { viewModel.drawerFolderHasContent(it) }
         val inFolders = groups.filter { viewModel.leavesMainList(it) }.flatMapTo(HashSet()) { it.members }
-        val folders = groups.map { group ->
+        val shown = groups.filterNot { com.supernova.launcher.data.TabFolders.keyOf(it.id) in inFolders }
+        val folders = shown.map { group ->
             SearchResult.Folder(
-                itemId = null, groupName = group.name, label = group.name,
-                icon = folderIcon(com.supernova.launcher.search.FolderSearchProvider.Hit(null, group.name, group.name))
+                itemId = null, groupId = group.id, label = group.name,
+                icon = folderIcon(com.supernova.launcher.search.FolderSearchProvider.Hit(null, group.id, group.name))
             )
         }
         val allApps = com.supernova.launcher.data.LabelOrder.sorted(
@@ -680,7 +720,7 @@ class SearchController(
         ui.searchInput.setHintTextColor((0x99 shl 24) or (bar.text and 0xFFFFFF))
         ui.searchGhost.setTextColor((0x80 shl 24) or (bar.text and 0xFFFFFF))
         ui.searchGhost.typeface = ui.searchInput.typeface
-        val iconTint = ColorStateList.valueOf(bar.text)
+        val iconTint = ColorStateList.valueOf(SearchBarButtons.iconTint(bar.text))
         ImageViewCompat.setImageTintList(ui.searchIcon, iconTint)
         overlaySurface?.let { surface ->
             surface.appliedStyle = null

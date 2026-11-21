@@ -1,13 +1,23 @@
 package com.supernova.launcher.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 
-val Context.supernovaStore by preferencesDataStore(name = "supernova_store")
+// An unreadable file is replaced rather than thrown on every read
+// (StoreRecovery).
+val Context.supernovaStore by preferencesDataStore(
+    name = "supernova_store",
+    corruptionHandler = ReplaceFileCorruptionHandler { failure ->
+        StoreRecovery.onCorrupt(failure)
+        emptyPreferences()
+    }
+)
 
 object StoreKeys {
     val model: Preferences.Key<String> = stringPreferencesKey("launcher_model")
@@ -33,4 +43,10 @@ object StoreKeys {
     // gate, so the starting layout is a property of this install and a
     // restored backup never brings it back. See DefaultLayoutBuilder.
     val defaultLayoutSeeded: Preferences.Key<Boolean> = booleanPreferencesKey("default_layout_seeded")
+
+    // Settings > Folders "Sort apps A-Z", retired (#156): it showed every
+    // folder A-Z without changing its order, and kept apps from being
+    // dragged into an order of their own. Read only to sort the folders of
+    // a store or backup that had it on (FolderSort.allSorted), then dropped.
+    val retiredFolderSortAz: Preferences.Key<Boolean> = booleanPreferencesKey("folder_sort_az")
 }

@@ -8,7 +8,6 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.drawable.Drawable
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.graphics.createBitmap
-import androidx.core.graphics.drawable.toBitmap
 import androidx.core.graphics.drawable.toDrawable
 import com.supernova.launcher.R
 import com.supernova.launcher.data.DrawerGroup
@@ -27,6 +26,13 @@ class GroupIcons(
     fun app(app: LaunchableApp): Drawable? = viewModel.appCatalog().iconFor(app)
 
     fun folder(group: DrawerGroup): Drawable = itemIcons.drawerFolderIcon(group, viewModel.drawerFolderApps(group))
+
+    // A tab's own icon as its tab shows it: the picked one, else its glyph
+    // or letter (tinted by the view showing it).
+    fun tabIcon(group: DrawerGroup): Drawable =
+        itemIcons.customFolderIcon(group.iconBase64, group.iconPack, group.iconName, group.iconRaw)
+            ?.let { com.supernova.launcher.ui.TabIcons.Untinted(it) }
+            ?: com.supernova.launcher.ui.TabIcons.groupGlyph(context, group.name)
 
     // A tab's row picture: its first apps' icons, each over the one before
     // with a gap cut round it, so they read apart on any card. An empty
@@ -49,7 +55,11 @@ class GroupIcons(
                 val corner = size * CUT_CORNER + gap
                 canvas.drawRoundRect(left - gap, top - gap, left + size + gap, top + size + gap, corner, corner, clear)
             }
-            canvas.drawBitmap(icon.toBitmap(size, size), left, top, null)
+            // Drawn, not copied with toBitmap(): an icon's shadow falls past
+            // its bounds, and a copy at its size cut it off.
+            val copy = icon.constantState?.newDrawable()?.mutate() ?: icon
+            copy.setBounds(left.toInt(), top.toInt(), left.toInt() + size, top.toInt() + size)
+            copy.draw(canvas)
         }
         return bitmap.toDrawable(context.resources)
     }

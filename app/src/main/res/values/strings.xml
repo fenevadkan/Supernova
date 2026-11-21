@@ -7,15 +7,16 @@
     <string name="set_default_launcher">Set as default launcher</string>
     <string name="add_page">Add page</string>
     <string name="remove_page">Remove this page</string>
-    <string name="set_default_page">Set as default page</string>
+    <string name="page_removed">Page removed</string>
+    <string name="set_default_page">Make this the home page</string>
     <string name="move_page_left">Move page left</string>
     <string name="move_page_right">Move page right</string>
     <string name="settings_title">Launcher settings</string>
     <string name="search_apps">Search apps</string>
+    <string name="drawer_search_hint">Search</string>
     <string name="add_to_home">Add to Home</string>
     <string name="app_info">App info</string>
     <string name="uninstall">Uninstall</string>
-    <string name="rename">Rename</string>
     <string name="remove">Remove</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
@@ -24,12 +25,16 @@
     <string name="remove_from_folder">Move to Home</string>
     <string name="widget">Widget</string>
     <string name="widget_resize">Resize</string>
+    <!-- Long-press menu of a home screen icon or folder: makes it 2x2 cells, its icon twice the size, and back. -->
+    <string name="large_icon">Large icon</string>
+    <string name="normal_icon">Normal icon</string>
     <string name="padding">Padding</string>
     <string name="bring_to_front">Bring to front</string>
     <string name="send_to_back">Send to back</string>
     <string name="pin_shortcut_title">Add “%1$s” to Home?</string>
     <string name="pin_widget_title">Add “%1$s” widget to Home?</string>
     <string name="widget_picker_empty">No widgets available</string>
+    <string name="widget_search_no_matches">Nothing matches “%1$s”</string>
     <string name="home_action_wallpaper">Wallpapers</string>
     <string name="wallpaper_apps">Wallpaper apps</string>
     <string name="wallpaper_from_files">Image from files</string>
@@ -50,6 +55,7 @@
     <string name="no_room_on_page">No room on this page</string>
     <string name="no_room_anywhere">No room on any page</string>
     <string name="widget_not_in_dock">Widgets can\'t go in the dock</string>
+    <string name="shortcut_not_in_dock">Add it to the home screen first, then move it to the dock</string>
     <string name="added_to_page">Added to page %1$d</string>
     <string name="widget_span">%1$d × %2$d</string>
     <string name="widget_add_interrupted">Widget setup was interrupted, please try again</string>
@@ -94,13 +100,18 @@
     <string name="notification_access_title">Allow notification access</string>
     <string name="notification_access_badges">Badges are counted from your notifications, so Supernova needs notification access. They are read on this phone only.</string>
     <string name="notification_access_popup">The long-press menu lists an app\'s notifications, so Supernova needs notification access. They are read on this phone only.</string>
+    <string name="notification_access_media">The media card shows what is playing from your notifications, so Supernova needs notification access. They are read on this phone only.</string>
+    <string name="permission_in_app_info">Android won\'t ask again. Allow it here, under Permissions</string>
+    <string name="notification_access_restricted">If the notification access switch is greyed out, Android is blocking it because Supernova was not installed from the Play Store. Open App info, tap the \u22ee menu at the top right, choose Allow restricted settings, then open the notification access screen again.</string>
     <string name="open_settings">Open settings</string>
     <string name="not_now">Not now</string>
     <string name="continue_label">Continue</string>
-    <string name="accessibility_needed_title">Turn on the accessibility service</string>
-    <string name="accessibility_needed_message">Lock screen, Recent apps and Quick settings need Supernova\'s accessibility service. Supernova uses it only for these actions.</string>
+    <string name="accessibility_needed_title">Use the Accessibility API?</string>
+    <string name="accessibility_needed_message">Supernova uses Android\'s Accessibility API only to lock the screen, open Recent apps and open Quick settings when you use a gesture set to one of them.\n\nIt does not read what is on the screen or what you type, and it collects no data. Supernova has no internet access, so nothing leaves this phone.\n\nIf you agree, turn on Supernova on the next screen. You can turn it off there at any time.</string>
+    <string name="accessibility_agree">Agree</string>
+    <string name="accessibility_decline">Decline</string>
     <string name="gestures_need_accessibility">Needs the accessibility service</string>
-    <string name="gestures_need_accessibility_summary">Some of these gestures do nothing until it is on. Tap to turn it on</string>
+    <string name="gestures_need_accessibility_summary">Some gestures need this on. Tap to turn it on</string>
     <string name="device_admin_confirm_title">Lock with device admin?</string>
     <string name="device_admin_inactive">Device admin is off</string>
     <string name="device_admin_inactive_summary">Lock screen does nothing until it is on. Tap to turn it on</string>
@@ -110,7 +121,15 @@
     <string name="reset_custom_icons">Reset custom icons</string>
     <string name="reset_custom_icons_none">None set</string>
     <string name="reset_custom_icons_none_toast">No app, folder or shortcut has a custom icon</string>
-    <string name="reset_custom_icons_message">Every app, folder and shortcut icon you changed goes back to the default, with any shape or style picked for it. Names and swipe actions stay.</string>
+    <string name="reset_custom_icons_message">Icons you changed in the ticked groups go back to the default, with any shape or style picked for them. Names, hidden labels, swipe actions and icon sizes stay.</string>
+    <string name="reset_custom_icons_apps">Drawer apps</string>
+    <string name="reset_custom_icons_placed_apps">Apps on the home screen</string>
+    <string name="reset_custom_icons_folders">Folders and tabs</string>
+    <string name="reset_custom_icons_shortcuts">Shortcuts and contacts</string>
+    <string name="reset_hidden_labels">Reset hidden labels</string>
+    <string name="reset_hidden_labels_none">None hidden</string>
+    <string name="reset_hidden_labels_none_toast">No app or shortcut has a hidden label</string>
+    <string name="reset_hidden_labels_message">Every app and shortcut whose label you hid shows it again. Names, icons and swipe actions stay.</string>
     <plurals name="custom_icon_apps">
         <item quantity="one">%d app</item>
         <item quantity="other">%d apps</item>
@@ -124,7 +143,7 @@
         <item quantity="other">%d shortcuts</item>
     </plurals>
     <string name="gestures">Gestures</string>
-    <string name="accessibility_description">Lets Supernova lock the screen from a gesture. Optional; no screen content is read.</string>
+    <string name="accessibility_description">Lets Supernova lock the screen, open Recent apps and open Quick settings from your gestures. It does not read the screen or collect any data. Optional.</string>
     <string name="hidden_apps">Hidden apps</string>
     <string name="drawer_groups">Drawer groups</string>
     <string name="drawer_style">Drawer style</string>
@@ -148,11 +167,9 @@
     <string name="drawer_tab_bar_no_tabs">%1$s · add tabs in Drawer groups</string>
     <string name="drawer_frequent_row">Top row</string>
     <string name="drawer_frequent_row_summary">A row of apps above the app list</string>
-    <string name="drawer_top_row_sort">Top row order</string>
     <string name="drawer_sort_buttons">Sort buttons</string>
-    <string name="drawer_sort_buttons_summary">Change the order from the top of the app list and the top row</string>
+    <string name="drawer_sort_buttons_summary">Change the order from the top of the app list</string>
     <string name="drawer_sort_apps_desc">App order: %1$s</string>
-    <string name="drawer_sort_top_row_desc">Top row order: %1$s</string>
     <string name="drawer_remember_position">Remember position</string>
     <string name="drawer_auto_close">Automatically close</string>
     <string name="drawer_folders_first">Show folders first</string>
@@ -166,7 +183,7 @@
     <string name="category_maps">Travel</string>
     <string name="category_productivity">Productivity</string>
     <string name="category_finance">Finance</string>
-    <string name="drawer_icon_scale">Icon scale</string>
+    <string name="drawer_icon_scale">Icon size</string>
     <string name="drawer_bg_opacity">Background opacity</string>
     <string name="drawer_fast_scroller">Fast scroller</string>
     <string name="drawer_labels">Icon labels</string>
@@ -183,8 +200,28 @@
     <string name="hide_label">Hide label</string>
     <string name="change_icon">Change icon</string>
     <string name="select_apps">Select apps</string>
+    <string name="checklist_hide_placed">Hide apps in other groups</string>
     <string name="drawer_tab_empty">No apps in this tab yet</string>
     <string name="sort">Sort</string>
+    <string name="move_to_drawer">Move to drawer</string>
+    <string name="move_to_drawer_as_folder">Drawer folder</string>
+    <string name="move_to_drawer_tab">New tab</string>
+    <string name="move_to_drawer_put_in">Put it in</string>
+    <string name="move_to_drawer_tab_hint">Its apps get a tab of their own, named “%1$s”.</string>
+    <string name="move">Move</string>
+    <plurals name="move_to_drawer_summary">
+        <item quantity="one">“%1$s” · %2$d app</item>
+        <item quantity="other">“%1$s” · %2$d apps</item>
+    </plurals>
+    <plurals name="move_to_drawer_stays">
+        <item quantity="one">%d shortcut can’t go in the drawer, so it stays on Home.</item>
+        <item quantity="other">%d shortcuts can’t go in the drawer, so they stay on Home.</item>
+    </plurals>
+    <string name="moved_to_drawer">Moved to the drawer</string>
+    <plurals name="moved_to_drawer_left_behind">
+        <item quantity="one">Moved to the drawer. %d shortcut stayed on Home</item>
+        <item quantity="other">Moved to the drawer. %d shortcuts stayed on Home</item>
+    </plurals>
     <string name="reshape">Reshape</string>
     <string name="reshape_summary">Fit the icon to the icon shape</string>
     <string name="folder_menu">Folder options</string>
@@ -256,15 +293,18 @@
     <string name="badge_style_numeric">Numeric dots</string>
     <string name="badge_style_dynamic">Dynamic badges</string>
     <string name="badged_apps">Badged apps</string>
+    <string name="badged_apps_all">All apps</string>
     <string name="badge_color">Badge color</string>
     <string name="badge_color_icon">Matches the app icon</string>
     <string name="badge_text_color">Number color</string>
     <string name="badge_corner_radius">Corner radius</string>
     <string name="badge_outline">Outline</string>
     <string name="badge_position">Badge position</string>
+    <string name="badge_on_corner">Badge on the corner</string>
+    <string name="badge_on_corner_summary">Half outside the icon, so it covers less of it</string>
     <string name="badge_size">Badge size</string>
     <string name="badge_test">Test notification badge</string>
-    <string name="badge_test_summary">Post a notification that will create a badge on the Supernova Settings icon</string>
+    <string name="badge_test_summary">Post a notification to badge the Settings icon</string>
     <string name="badge_test_channel">Test notifications</string>
     <string name="badge_test_title">Test notification</string>
     <string name="badge_test_text">Supernova Settings has a badge now. Tap to clear it.</string>
@@ -292,12 +332,10 @@
     <string name="folder_icon_appearance">Folder icon appearance</string>
     <string name="folder_icon_shape">Background shape</string>
     <string name="folder_icon_outline">Accent outline</string>
-    <string name="folder_clip_to_bg">Keep icons inside the background</string>
     <string name="folder_match_window_color">Match folder window color</string>
     <string name="folder_plate_color">Color</string>
     <string name="folder_columns">Columns</string>
     <string name="folder_columns_auto">Auto</string>
-    <string name="folder_sort_az">Sort apps A-Z</string>
     <string name="folder_labels">Icon labels</string>
     <string name="folder_close_on_launch">Close after launching</string>
     <string name="color_default">Default</string>
@@ -334,6 +372,7 @@
     <string name="page_desc">Page %1$d of %2$d</string>
     <string name="auto_backups">Automatic backups</string>
     <string name="no_auto_backups">No automatic backups yet</string>
+    <string name="auto_backups_latest">Latest %1$s</string>
     <string name="restore_backup_q">Restore this backup?</string>
     <string name="import_confirm_own">This replaces your home screen and all settings with the ones in the backup. Your current setup is saved under Automatic backups first.</string>
     <string name="import_confirm_other">This replaces your home screen with the layout from another launcher\'s backup. Your other settings stay. Your current setup is saved under Automatic backups first.</string>
@@ -354,7 +393,7 @@
     <string name="action_expand_notifications">Expand notifications</string>
     <string name="action_open_settings">Open launcher settings</string>
     <string name="action_lock_screen">Lock screen</string>
-    <string name="action_default_page">Go to default page</string>
+    <string name="action_default_page">Go to home page</string>
     <string name="action_open_search">Open search</string>
     <string name="action_recents">Recent apps</string>
     <string name="action_quick_settings">Quick settings</string>
@@ -362,8 +401,6 @@
     <string name="action_launch_app">Launch app</string>
     <string name="action_launch_shortcut">Launch shortcut</string>
     <string name="assistant_unavailable">No assistant app available</string>
-    <string name="pick_shortcut">Choose a shortcut</string>
-    <string name="no_shortcuts">This app has no shortcuts</string>
 
     <string name="shape_system">System default</string>
     <string name="shape_circle">Circle</string>
@@ -402,8 +439,8 @@
     <string name="popup_card_bg">Group shortcuts in a card</string>
     <string name="popup_group_shortcuts">Visually group shortcuts</string>
     <string name="popup_action_icons">Actions as icons</string>
-    <string name="popup_action_icons_summary">Remove, Widgets, App info and the rest in one row of icons; hold one for its name</string>
-    <string name="popup_group_shortcuts_summary">Shortcuts and notifications sit apart from the menu, one tile each</string>
+    <string name="popup_action_icons_summary">Menu actions as one row of icons</string>
+    <string name="popup_group_shortcuts_summary">Shortcuts and notifications in their own tiles</string>
     <string name="popup_style">Long-press menu style</string>
     <string name="popup_style_block">Block</string>
     <string name="popup_style_pills">Pills</string>
@@ -417,6 +454,8 @@
     <string name="drawer_scrubber_color">Fast scroller color</string>
     <string name="drawer_isolate_tabs">Isolate tabs</string>
     <string name="drawer_isolate_tabs_summary">Prevent changing tabs when swiping sideways</string>
+    <string name="drawer_tabs_loop">Loop tabs</string>
+    <string name="drawer_tabs_loop_summary">Swipe from the last tab to the first</string>
     <string name="drawer_tab_style">Tab type</string>
     <string name="tab_style_classic">Classic</string>
     <string name="tab_style_bubble">Bubble</string>
@@ -425,7 +464,7 @@
     <string name="tab_content_icon">Icon</string>
     <string name="tab_content_both">Label and icon</string>
     <string name="drawer_tab_align">Tab alignment</string>
-    <string name="tab_align_start">Start</string>
+    <string name="tab_align_start">Left</string>
     <string name="tab_align_center">Center</string>
     <string name="group_keep_in_main">Keep apps in main app tab</string>
     <string name="group_keep_in_main_summary">Its apps also stay in the main tab</string>
@@ -449,7 +488,7 @@
     <string name="group_default_tag">Default</string>
     <string name="group_smart_tag">Smart</string>
     <string name="group_tab_hint">Drag a row to set the order in the tab bar.</string>
-    <string name="group_folder_hint">Folders sit in the app list, in this order.</string>
+    <string name="group_folder_hint">Folders sit in the app list, in this order. Drag one up into Tabs to make it a tab.</string>
     <string name="group_tab_bar_hidden">The tab bar is hidden, so tabs don\'t show in the drawer. Set Tab bar position on the App drawer page to bring them back.</string>
     <string name="groups_intro">Sort the app drawer your way. A group is a set of apps shown as a tab or as a folder.</string>
     <string name="groups_tabs_blurb">Pages of the drawer you swipe between, such as Games or Travel.</string>
@@ -459,7 +498,11 @@
     <string name="group_type_tab_hint">Sits in the drawer\'s tab bar.</string>
     <string name="group_type_folder_hint">Sits in the app list as one tile.</string>
     <string name="group_folder_icon">Folder icon</string>
+    <string name="group_tab_icon">Tab icon</string>
     <string name="group_folder_icon_change">Change</string>
+    <string name="group_put_in">Put it in</string>
+    <string name="group_put_in_nowhere">No tab or folder</string>
+    <string name="group_folder_in">Folder in %1$s</string>
     <string name="group_more_apps">+%d</string>
     <string name="group_default_tab_summary">The drawer opens on this tab</string>
     <string name="delete_tab">Delete tab</string>
@@ -467,7 +510,7 @@
     <string name="group_deleted">%1$s deleted</string>
     <string name="group_name_required">Enter a name</string>
     <string name="new_tab">New tab</string>
-    <string name="edit_tab">Edit tab</string>
+    <string name="group_settings">Group settings</string>
     <string name="show_hidden_apps">Show hidden apps</string>
     <string name="hide_hidden_apps">Hide hidden apps again</string>
     <string name="app_hidden">%1$s hidden from the drawer</string>
@@ -493,8 +536,6 @@
     <string name="search_window_window">Window</string>
     <string name="search_apps_one_row">Limit apps to one row</string>
     <string name="search_apps_one_row_summary">App results in one row that scrolls sideways</string>
-    <string name="feed_show_shortcuts">Frequently used shortcuts</string>
-    <string name="feed_show_shortcuts_subtitle">Keep commonly used shortcuts in the top row for quick access</string>
     <string name="contact_call">Call</string>
     <string name="contact_message">Message</string>
     <string name="search_contact_cards">Contact card view</string>
@@ -509,10 +550,14 @@
     <string name="about_whats_new_none">No release notes in this build.</string>
     <string name="about_report_issue">Report an issue</string>
     <string name="about_report_issue_summary">Opens a new issue on GitHub</string>
-    <string name="about_report_issue_body">\n\n---\nSupernova %1$s, Android %2$s (API %3$d), %4$s</string>
+    <string name="about_report_issue_body">\n\n---\n%1$s</string>
+    <string name="about_device_details">Supernova %1$s, Android %2$s (API %3$d), %4$s</string>
     <string name="about_no_browser">No app here opens links</string>
     <string name="about_source">Source code</string>
     <string name="about_source_url" translatable="false">https://github.com/tanujnotes/Supernova</string>
+    <string name="about_privacy">Privacy policy</string>
+    <string name="about_privacy_summary">No data collected; nothing leaves this phone</string>
+    <string name="about_privacy_url" translatable="false">https://github.com/tanujnotes/Supernova/blob/main/PRIVACY.md</string>
     <string name="crash_log">Crash log</string>
     <string name="crash_log_none">No crashes recorded</string>
     <plurals name="crash_log_count">
@@ -534,8 +579,8 @@
     <string name="section_home_subtitle">Grid, icons, labels and pages</string>
     <string name="section_dock_subtitle">Icons, background and pages</string>
     <string name="section_drawer_subtitle">Layout, style and groups</string>
-    <string name="section_search_subtitle">Providers, window and search bars</string>
-    <string name="section_feed_subtitle">The page beside home and its cards</string>
+    <string name="section_search_subtitle">Providers and search window</string>
+    <string name="section_feed_subtitle">The page before home and its cards</string>
     <string name="section_folders_subtitle">Window, icon and labels</string>
     <string name="section_icons_subtitle">Shape, packs, labels and badges</string>
     <string name="section_style_subtitle">Theme, colors and surfaces</string>
@@ -548,12 +593,14 @@
     <string name="group_pages">Pages</string>
     <string name="group_tabs">Tabs &amp; groups</string>
     <string name="group_providers">Providers</string>
-    <string name="group_bars">Search bars</string>
     <string name="group_icons">Icons</string>
     <string name="group_appearance">Appearance</string>
     <string name="group_label_rows">Labels</string>
     <string name="group_badges">Badges</string>
     <string name="group_popup">Popup menu</string>
+    <string name="group_editing">Editing</string>
+    <string name="group_search_window">Search window</string>
+    <string name="group_folder_window">Window</string>
     <string name="group_one_finger">One finger</string>
     <string name="group_two_fingers">Two fingers</string>
     <string name="style_strip_sample">Aa</string>
@@ -564,17 +611,17 @@
     <string name="dock_bg_opacity">Background opacity</string>
     <string name="dock_bg_radius">Background radius</string>
     <string name="dock_labels">Icon labels</string>
-    <string name="dock_icon_scale">Icon scale</string>
+    <string name="dock_icon_scale">Icon size</string>
     <string name="dock_bg_none">None</string>
     <string name="dock_bg_rounded">Rounded rectangle</string>
     <string name="dock_bg_square">Square</string>
     <string name="opacity_percent">%1$d%%</string>
     <string name="color_with_opacity">%1$s, %2$d%%</string>
-    <string name="color_custom">Custom</string>
-    <string name="color_hue">Hue</string>
-    <string name="color_saturation">Saturation</string>
-    <string name="color_brightness">Brightness</string>
+    <string name="color_hue">Color</string>
+    <string name="color_shade">Shade</string>
     <string name="color_hex">Hex</string>
+    <string name="color_recent">Recent</string>
+    <string name="custom_color_title">Custom color</string>
     <string name="dock_padding_h">Horizontal padding</string>
     <string name="dock_padding_v">Vertical padding</string>
     <string name="drawer_padding_h">Horizontal padding</string>
@@ -618,7 +665,7 @@
     <string name="folder_prioritize_first">Prioritize first icon</string>
     <string name="folder_prioritize_first_summary">The first app large in the folder icon, the rest small</string>
     <string name="label_customize">Customize labels</string>
-    <string name="folder_icon_scale">Icon scale</string>
+    <string name="folder_icon_scale">Icon size</string>
 
     <string name="effect_none">None</string>
     <string name="effect_simple">Simple</string>
@@ -653,7 +700,9 @@
          names its controls briefly because they sit under its "Label"
          header; search lists them by the longer names above. -->
     <string name="icon_size">Icon size</string>
-    <string name="label_group">Label</string>
+    <!-- Under an Icon size bar when icons are drawn smaller to fit the grid. -->
+    <string name="icon_size_fitted">Icons are at the largest this grid fits. Use fewer rows or columns, or turn labels off, for larger icons.</string>
+    <string name="label_group">Icon labels</string>
     <string name="label_card_size">Size</string>
     <string name="label_card_font">Font</string>
     <!-- Under the Label row: its size, then its font. -->
@@ -665,7 +714,7 @@
     <string name="font_serif">Serif</string>
     <string name="font_monospace">Monospace</string>
     <string name="dock_infinite_scroll">Infinite scroll</string>
-    <string name="dock_match_desktop">Match desktop icon scale</string>
+    <string name="dock_match_desktop">Match desktop icon size</string>
     <string name="dock_overlay">Display as overlay</string>
     <string name="dock_overlay_summary">The dock sits over the home screen instead of below it</string>
     <string name="dock_auto_close">Automatically close</string>
@@ -685,6 +734,7 @@
     <string name="palette_seed_hint">Hex color, e.g. 3366FF</string>
     <string name="palette_seed_invalid">Not a valid hex color</string>
     <string name="style_popup">Popup menu</string>
+    <string name="style_cards">Cards</string>
     <string name="style_bar_glass_note">Glass takes the place of the surface color. It\'s set on the bar\'s own page.</string>
     <string name="style_slot_surface">Background</string>
     <string name="style_slot_text">Text</string>
@@ -694,25 +744,21 @@
     <string name="style_role_neutral">Neutral</string>
     <string name="style_role_neutral_variant">Neutral variant</string>
     <string name="style_opacity">Opacity</string>
-    <string name="group_name_taken">A group with that name already exists</string>
     <string name="labs">Labs</string>
     <string name="group_home_button">Home button</string>
-    <string name="feed_cards_link">Cards</string>
-    <string name="feed_cards_link_summary">Add, edit and remove the cards on this page</string>
-    <string name="cards_feed_link">Feed page</string>
     <string name="section_labs_subtitle">Experiments and icon theme tools</string>
     <string name="labs_show_component">Show component in edit dialog</string>
-    <string name="labs_show_component_summary">For icon theme makers: an app\'s edit sheet shows its component name</string>
+    <string name="labs_show_component_summary">Show the component name in the app edit sheet</string>
     <string name="labs_big_grid">Big grid size options</string>
-    <string name="labs_big_grid_summary">Lift the limits on grid sizes, for heavily customized setups: up to 24 by 24 on the home screen, 12 dock icons, 12 drawer columns and 10 folder columns</string>
+    <string name="labs_big_grid_summary">Grids up to 24×24, with more dock, drawer and folder columns</string>
     <string name="labs_export_png">Show Export PNG in long-press menu</string>
-    <string name="labs_export_png_summary">Save a transparent image of a widget, folder or icon from its menu on the home screen</string>
+    <string name="labs_export_png_summary">Adds Export PNG to home screen item menus</string>
     <string name="export_png">Export PNG</string>
     <string name="export_png_saved">PNG saved</string>
     <string name="export_png_failed">Couldn\'t save the PNG: %1$s</string>
     <string name="export_png_lost">Couldn\'t save the PNG: Supernova restarted while the file picker was open</string>
     <string name="labs_export_icons">Export icons</string>
-    <string name="labs_export_icons_summary">Save every app\'s own icon to a zip, with an appfilter.xml of their component names to start an icon pack from</string>
+    <string name="labs_export_icons_summary">Save all app icons and an appfilter.xml to a zip</string>
     <string name="labs_export_icons_failed">Couldn\'t export icons: %1$s</string>
     <plurals name="labs_icons_exported">
         <item quantity="one">Exported %d icon</item>
@@ -725,8 +771,6 @@
     <string name="permission_contacts_use">contacts in search and the feed</string>
     <string name="permission_calendar">Calendar</string>
     <string name="permission_calendar_use">the feed\'s calendar card</string>
-    <string name="permission_nearby">Nearby devices</string>
-    <string name="permission_nearby_use">card conditions on Bluetooth devices</string>
     <string name="permission_notifications">Notification access</string>
     <string name="permission_notifications_use">badges, notifications in the popup menu and the media card</string>
     <string name="permission_post_notifications">Post notifications</string>
@@ -754,11 +798,15 @@
     <string name="settings_section_search">Search</string>
     <string name="search_hint">Search</string>
     <string name="search_web_provider">Web search engine</string>
+    <string name="search_web_custom_url">Search URL</string>
+    <string name="search_web_custom_title">Custom search engine</string>
+    <string name="search_web_custom_message" formatted="false">The address of a search, with %s where your search goes. For example: https://example.org/search?q=%s</string>
+    <string name="search_web_custom_invalid">Enter an address starting with https://</string>
     <string name="search_contacts">Search contacts</string>
     <string name="search_shortcuts">Search app shortcuts</string>
     <string name="search_calculator">Calculator</string>
-    <string name="search_hidden_apps">Hidden apps</string>
-    <string name="search_hidden_apps_summary">Find apps hidden from the drawer when you search</string>
+    <string name="search_hidden_apps">Search hidden apps</string>
+    <string name="search_hidden_apps_summary">Hidden apps will appear in search results</string>
     <string name="search_private_keyboard">Private keyboard mode</string>
     <string name="search_private_keyboard_summary">Asks the keyboard not to learn from your searches</string>
     <string name="home_button_action">Home button action</string>
@@ -769,11 +817,13 @@
     <string name="search_bar_above_dock">Above dock</string>
     <string name="search_bar_below_dock">Below dock</string>
     <string name="search_bar_persistent">Always show at bottom</string>
+    <string name="search_bar_top">Always show at top</string>
     <string name="search_bar_widget">Workspace widget</string>
     <string name="search_bar_wireframe">Wireframe style</string>
     <string name="search_bar_wireframe_summary">Only an outline, with no fill</string>
     <string name="search_bar_shadow">Shadow</string>
     <string name="search_bar_hint_text">Show “Search” text</string>
+    <string name="drawer_bar_hint_text">Show “Search” text</string>
     <string name="search_bar_chips">Buttons</string>
     <string name="search_bar_chip_voice">Voice search</string>
     <string name="search_bar_chip_assistant">Assistant</string>
@@ -782,6 +832,7 @@
     <string name="search_web_for">Search %1$s for “%2$s”</string>
     <string name="search_demo_calc">12 × 8 = 96</string>
     <string name="search_demo_shortcut">App shortcut</string>
+    <string name="preview_popup_notification">2 new messages</string>
     <string name="search_demo_contact">Contact</string>
     <string name="search_demo_folder">Folder</string>
     <string name="copied_to_clipboard">Copied to clipboard</string>
@@ -803,9 +854,12 @@
     <string name="needs_dock">Needs the dock, in Dock</string>
     <string name="needs_badges">Needs notification badges, in Icons &amp; labels</string>
     <string name="needs_animations">Animations are off, in Home screen</string>
-    <string name="needs_feed">Needs the feed page, in Feed page</string>
-    <string name="infinite_scroll_summary">Swipe past the last page to reach the first. Swipe left and right gestures do nothing while it\'s on</string>
+    <string name="infinite_scroll_summary">Swipe past the last page to reach the first; turns off left/right swipe gestures</string>
     <string name="settings_search_no_matches">No settings match “%1$s”</string>
+    <!-- A settings search hit its page hides: what brings it back (#133). -->
+    <string name="settings_search_needs_on">Needs %1$s on</string>
+    <string name="settings_search_needs_off">Needs %1$s off</string>
+    <string name="settings_search_depends_on">Depends on %1$s</string>
     <string name="search_bar_replace">Replace</string>
     <string name="search_bar_settings">Search bar settings</string>
     <string name="search_bar_restore">Use the built-in bar</string>
@@ -816,7 +870,7 @@
     <string name="gesture_swipe_left">Swipe left</string>
     <string name="gesture_swipe_right">Swipe right</string>
     <string name="gesture_left_right_conflict">Swipe left/right</string>
-    <string name="gesture_left_right_conflict_summary">These gestures don\'t work with infinite scroll on the home screen</string>
+    <string name="gesture_left_right_conflict_summary">Don\'t work while infinite scroll is on</string>
     <string name="gesture_double_tap_swipe_up">Double tap &amp; swipe up</string>
     <string name="gesture_double_tap_swipe_down">Double tap &amp; swipe down</string>
     <string name="gesture_rotate_cw">Two-finger rotate clockwise</string>
@@ -851,10 +905,8 @@
     <string name="anim_slide_left">Slide left</string>
     <string name="disable_animations">Disable animations</string>
     <string name="animation_speed">Animation speed</string>
-    <string name="anim_speed_slow">Slow</string>
-    <string name="anim_speed_default">Default</string>
+    <string name="anim_speed_relaxed">Relaxed</string>
     <string name="anim_speed_fast">Fast</string>
-    <string name="anim_speed_faster">Faster</string>
 
     <!-- Phase 6: drag UX -->
     <string name="drop_targets">Drag drop targets</string>
@@ -862,16 +914,18 @@
     <string name="undo_remove">Undo bar after removing</string>
     <string name="item_removed">Removed</string>
     <string name="undo">Undo</string>
-    <string name="card_deleted">Card deleted</string>
+    <string name="folder_sorted">Sorted A-Z</string>
 
     <!-- Phase 6: popup menu -->
     <string name="popup_menu_rows">Popup menu items</string>
+    <!-- Under Popup menu items: how many extra rows each menu has. -->
+    <string name="popup_rows_summary">%1$d on Home · %2$d in the drawer</string>
     <string name="popup_notifications">Notifications in popup</string>
     <string name="popup_row_store">Show in store</string>
     <string name="popup_row_close_app">Close app</string>
     <string name="popup_row_relaunch">Relaunch</string>
     <string name="popup_row_save_apk">Save APK</string>
-    <string name="app_closed">App closed</string>
+    <string name="app_closed">Closed background tasks for “%s”</string>
     <string name="apk_saved">APK saved</string>
     <string name="apk_saved_base">Base APK saved (app uses split APKs)</string>
     <string name="apk_save_failed">Couldn\'t save APK</string>
@@ -880,36 +934,26 @@
     <string name="hide_status_bar">Hide status bar</string>
     <string name="status_bar_icons">Status bar icon color</string>
     <string name="status_icons_auto">Follow theme</string>
+    <string name="status_icons_wallpaper">Based on wallpaper</string>
     <string name="status_icons_dark">Dark icons</string>
     <string name="status_icons_light">Light icons</string>
     <string name="transparent_nav">Transparent navigation bar</string>
     <string name="transparent_status">Transparent status bar</string>
-    <string name="icon_wiggle">Wiggle icons while dragging</string>
-    <string name="home_button_main_page_only">Only on the main page</string>
+    <string name="nav_bar_buttons">Navigation bar button color</string>
+    <string name="nav_buttons_status_bar">Same as status bar</string>
+    <string name="home_button_main_page_only">Only on the home page</string>
+    <string name="home_return_default_page">Return to default page</string>
+    <string name="home_return_default_page_summary">Home from an app or after the screen turns off goes to the default page</string>
 
     <!-- Phase 7: feed page -->
-    <string name="settings_section_feed">Feed page</string>
-    <string name="feed_enabled">Show before first page</string>
+    <string name="settings_section_feed">Feed</string>
+    <string name="feed_enabled">Show before the first page</string>
     <string name="feed_enabled_subtitle">Show the feed as an additional home screen page before the first</string>
-    <string name="feed_edge_swipe">Open with left-edge swipe</string>
+    <string name="feed_card_colors">Card colors</string>
+    <string name="feed_edge_swipe">Open with a left-edge swipe</string>
     <string name="feed_show_search">Search bar</string>
-    <string name="feed_show_frequent">Frequently used apps</string>
-    <string name="feed_show_frequent_subtitle">Keep commonly used apps in the top row for quick access</string>
-    <string name="feed_no_frequent">No frequent apps yet</string>
-    <string name="feed_menu">Feed options</string>
-    <string name="feed_menu_settings">Settings</string>
     <string name="feed_show_media">Show when media is playing</string>
     <string name="cards_media_title">Media controls</string>
-    <string name="card_show_in_feed">Feed page</string>
-    <string name="card_settings">Card settings</string>
-    <string name="card_history">Activation history</string>
-    <string name="card_history_never">Not activated yet</string>
-    <string name="card_history_at">Activated %1$s</string>
-    <string name="card_history_none">No activation conditions</string>
-    <string name="card_sample_title">Title</string>
-    <string name="card_sample_artist">Artist</string>
-    <string name="card_sample_event">Team meeting</string>
-    <string name="card_sample_event_2">Dentist</string>
     <string name="feed_show_calendar">Show upcoming events</string>
     <string name="feed_show_contacts">Show starred contacts</string>
     <string name="feed_media_needs_access">Needs notification access</string>
@@ -926,85 +970,72 @@
     <string name="media_play_pause">Play or pause</string>
     <string name="media_next">Next track</string>
     <string name="media_previous">Previous track</string>
-    <string name="card_name">Card name</string>
-    <string name="card_details">Card details</string>
-    <string name="card_unsaved_title">Save changes?</string>
-    <string name="card_unsaved_message">This card has changes that haven\'t been saved.</string>
-    <string name="card_discard">Discard</string>
-    <string name="card_featured_desc">Choose an app, shortcut, or widget to feature in your card. (optional)</string>
-    <string name="card_featured_choose">Choose featured content</string>
-    <string name="card_widget_height">Widget height</string>
     <string name="card_widget_height_value">%1$d dp</string>
-    <string name="card_actions_desc">Pin up to 6 app or shortcut actions to your card</string>
+    <string name="card_widget_fill">Fill the page</string>
+    <string name="feed_settings">Feed settings</string>
+    <string name="feed_empty_title">Your feed</string>
+    <string name="feed_empty_text">Keep the widgets, apps and shortcuts you reach for most one swipe from home.</string>
+    <string name="feed_add_title">Add to feed</string>
+    <string name="feed_add_widget">Add a widget</string>
+    <string name="feed_add_widget_short">Widget</string>
+    <string name="feed_add_widget_desc">Any size, up to a whole page</string>
+    <string name="feed_add_shortcuts">Apps and shortcuts</string>
+    <string name="feed_add_shortcuts_cta">Add apps and shortcuts</string>
+    <string name="feed_add_shortcuts_desc">Up to six in one card</string>
+    <string name="feed_ready_made">Ready-made cards</string>
+    <string name="card_menu_remove">Remove</string>
+    <string name="card_removed">Card removed</string>
+    <string name="card_caption_pinned">Pinned</string>
+    <string name="card_name_optional">Name (optional)</string>
+    <string name="card_widget_kind">Widget</string>
+    <string name="card_widget_change">Change</string>
+    <string name="card_height">Height</string>
+    <string name="card_height_set">Set height</string>
+    <string name="card_items_label">Apps and shortcuts</string>
+    <string name="card_widget_items">Shortcuts under the widget</string>
+    <string name="card_items_count">%1$d of %2$d</string>
+    <string name="card_items_add">+  Add</string>
+    <string name="card_item_earlier">Move earlier</string>
+    <string name="card_item_later">Move later</string>
+    <string name="card_item_remove">Remove %1$s</string>
+    <string name="card_large_tile">Show the first as a large tile</string>
+    <string name="card_summary_widget">Widget</string>
+    <string name="card_summary_fills">Widget · Fills the page</string>
+    <plurals name="card_items_summary">
+        <item quantity="one">%d app or shortcut</item>
+        <item quantity="other">%d apps and shortcuts</item>
+    </plurals>
+    <string name="card_widget_fill_desc">The card takes the whole page, and the feed stops on it as you scroll.</string>
+    <string name="card_frame">Card background</string>
+    <string name="card_frame_desc">Off shows the widget on its own</string>
     <string name="card_reorder">Drag to reorder</string>
-    <string name="card_activate">Activate in the feed</string>
-    <string name="card_activate_desc">Configure a set of conditions that, when all met, will cause this card to show in the app drawer.</string>
-    <string name="card_cond_daytime">Day/time</string>
-    <string name="card_cond_bt">Bluetooth connection</string>
-    <string name="card_cond_bt_hint">Requires Bluetooth permission</string>
-    <string name="card_cond_bt_field">Device name</string>
-    <string name="card_cond_add">Add condition</string>
-    <string name="card_cond_remove">Remove condition</string>
-    <string name="card_daytime_times">%1$s – %2$s</string>
-    <string name="card_daytime_on">%1$s on %2$s</string>
-    <string name="card_day_every">Every day</string>
-    <string name="card_menu_enable">Enable card</string>
-    <string name="card_menu_disable">Disable card</string>
     <string name="decrease">Decrease</string>
     <string name="increase">Increase</string>
-    <string name="card_featured">Featured content</string>
-    <string name="card_featured_app">App</string>
-    <string name="card_featured_shortcut">Shortcut</string>
-    <string name="card_actions">Actions</string>
     <string name="card_add_action">Add action</string>
-    <string name="card_actions_full">A card holds at most six actions</string>
-    <string name="card_time_start">Start time</string>
-    <string name="card_time_end">End time</string>
-    <string name="card_delete">Delete card</string>
-    <string name="card_day_mon">M</string>
-    <string name="card_day_tue">T</string>
-    <string name="card_day_wed">W</string>
-    <string name="card_day_thu">T</string>
-    <string name="card_day_fri">F</string>
-    <string name="card_day_sat">S</string>
-    <string name="card_day_sun">S</string>
-    <string name="feed_card_disabled">disabled</string>
-    <string name="card_menu">Card options</string>
-    <string name="card_menu_edit">Settings</string>
-    <string name="card_menu_pin">Pin</string>
+    <string name="card_menu_edit">Edit</string>
+    <string name="card_menu_pin">Pin to top</string>
     <string name="card_menu_unpin">Unpin</string>
     <string name="card_untitled">Card</string>
     <string name="card_widget_unavailable">Widget not available</string>
-    <string name="card_summary_pinned">Pinned</string>
-    <string name="card_summary_conditions">Shows in the drawer when its conditions are met</string>
-    <string name="card_summary_no_conditions">Feed and search only</string>
     <string name="search_cards">Search your cards</string>
-    <string name="feed_shortcut_rows">Suggested shortcuts rows</string>
-    <plurals name="feed_shortcut_rows_value">
-        <item quantity="one">%1$d row</item>
-        <item quantity="other">%1$d rows</item>
-    </plurals>
     <string name="settings_section_cards">Cards</string>
-    <string name="section_cards_subtitle">Make cards and when they show</string>
-    <string name="cards_yours">Your cards</string>
     <string name="cards_add">Add card</string>
-    <string name="cards_none">No cards yet</string>
-    <string name="feed_layout_header">Layout</string>
-    <plurals name="card_actions_count">
-        <item quantity="one">%d action</item>
-        <item quantity="other">%d actions</item>
-    </plurals>
     <string name="today">Today</string>
     <string name="tomorrow">Tomorrow</string>
 
     <!-- Onboarding: the first run - welcome, then six choices over a live
          preview of the home screen, then the finished home. -->
     <string name="onboarding_welcome_to">Welcome to</string>
-    <string name="onboarding_tagline">Infinitely customisable homescreen</string>
-    <string name="onboarding_design_home">Design my homescreen</string>
-    <string name="onboarding_restore_backup">Restore backup</string>
-    <string name="onboarding_skip_setup">Skip setup</string>
-    <string name="onboarding_skip_hint">To skip setting up Supernova, tap \'Skip setup\'</string>
+    <string name="onboarding_tagline">Infinitely customizable home screen</string>
+    <string name="onboarding_design_home">Design my home screen</string>
+    <string name="onboarding_import_lead">Coming from another launcher?</string>
+    <string name="onboarding_import_action"><u>Import your settings</u></string>
+    <string name="onboarding_privacy_line">Supernova collects no data. Nothing leaves your phone.</string>
+    <string name="onboarding_privacy_link"><u>Privacy policy</u></string>
+    <string name="onboarding_animations_title">Launcher animations</string>
+    <string name="onboarding_animations_message">Your phone\'s animations are turned off. Supernova\'s animations have their own switch. Keep them on? You can change this later in Settings.</string>
+    <string name="onboarding_animations_keep">Keep on</string>
+    <string name="onboarding_animations_off">Turn off</string>
     <string name="onboarding_previous">Previous</string>
     <string name="onboarding_skip">Skip</string>
     <string name="onboarding_look_title">Pick a starting point</string>
@@ -1026,7 +1057,7 @@
     <string name="onboarding_density_roomy">Roomy</string>
     <string name="onboarding_density_balanced">Balanced</string>
     <string name="onboarding_density_packed">Packed</string>
-    <!-- A grid's size: columns by rows. -->
+    <!-- A grid's size: rows by columns, as Settings shows it. -->
     <string name="onboarding_grid_size">%1$d × %2$d</string>
     <string name="onboarding_names_title">Name your apps</string>
     <string name="onboarding_names_summary">Pick a lettering, or hide the names.</string>
@@ -1055,6 +1086,7 @@
     <string name="quick_start">Quick start</string>
     <string name="quick_start_subtitle">Run the first-run setup again</string>
     <string name="restart_supernova">Restart Supernova</string>
+    <string name="restart_supernova_subtitle">Close and reopen the launcher</string>
     <string name="restart_launcher_q">Restart Supernova?</string>
     <string name="restart_launcher_message">Settings and the home screen close and open again. Nothing is lost.</string>
     <string name="restart">Restart</string>
@@ -1066,6 +1098,21 @@
     <string name="variant_default">Default</string>
     <string name="variant_themed">Themed</string>
     <string name="variant_original">Original</string>
+    <string name="variant_default_hint">Follows the launcher: its icon shape, glass and themed icons.</string>
+    <string name="variant_themed_hint">A one-color icon on a tinted plate, even with themed icons off.</string>
+    <string name="variant_original_hint">The icon as the app made it. Only a shape picked here applies.</string>
+    <!-- Edit sheet preview: the icon as it will look, and what differs from the default. -->
+    <string name="edit_preview">Preview</string>
+    <string name="edit_name">Name</string>
+    <string name="edit_no_changes">No changes</string>
+    <string name="edit_change_renamed">Renamed</string>
+    <string name="edit_change_hidden">Name hidden</string>
+    <string name="edit_change_icon">Icon: %1$s</string>
+    <string name="edit_shape_default">Default (launcher\'s shape)</string>
+    <plurals name="save_changes">
+        <item quantity="one">Save %d change</item>
+        <item quantity="other">Save %d changes</item>
+    </plurals>
     <!-- Home edit mode -->
     <string name="edit_widgets_title">Widgets</string>
     <string name="search_widgets_hint">Search widgets</string>

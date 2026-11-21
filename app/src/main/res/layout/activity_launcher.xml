@@ -3,7 +3,11 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    android:background="@android:color/transparent"
+    android:clipChildren="false">
+
+    <!-- clipChildren off: a corner badge (#250) on a dock icon reaches above
+         the dock's top edge. -->
 
     <!-- Optional status/nav contrast scrims: behind all content, over the
          wallpaper (the wallpaper renders behind the window). -->
@@ -41,6 +45,8 @@
         android:id="@+id/dockBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:layout_gravity="bottom"
         android:layout_margin="@dimen/space_ms"
         android:background="@android:color/transparent"
@@ -184,7 +190,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:background="@null"
-                        android:hint="@string/search_apps"
+                        android:hint="@string/drawer_search_hint"
                         android:imeOptions="actionSearch|flagNoExtractUi|flagNoFullscreen"
                         android:importantForAutofill="no"
                         android:inputType="text"
@@ -205,9 +211,10 @@
             android:visibility="gone"
             app:tabGravity="start"
             app:tabIndicator="@drawable/tab_indicator_drawer"
-            app:tabIndicatorColor="@color/accent"
+            app:tabIndicatorColor="?attr/colorAccent"
             app:tabIndicatorFullWidth="false"
             app:tabIndicatorHeight="3dp"
+            app:tabMinWidth="48dp"
             app:tabMode="scrollable"
             app:tabPaddingEnd="12dp"
             app:tabPaddingStart="12dp"
@@ -271,16 +278,6 @@
                 android:text="@string/work_apps_turn_off" />
         </LinearLayout>
 
-        <!-- Activated custom cards (all conditions met) sit above the list;
-             DrawerController fills and hides this. -->
-        <LinearLayout
-            android:id="@+id/drawerCards"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingHorizontal="@dimen/space_ms"
-            android:visibility="gone" />
-
         <!-- The top row of apps (drawerFrequentRow), with a short centred
              rule separating it from the list. DrawerController moves both
              into the list's header, the rule into DrawerSortBars' strip. -->
@@ -311,7 +308,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:paddingBottom="@dimen/space_ml"
-                android:scrollbars="vertical" />
+                android:scrollbars="none" />
 
             <!-- Paged drawer style only: real page views, so the page effect
                  and the wrap-around work the way the workspace pager's do. -->
@@ -547,6 +544,16 @@
             android:textColor="@color/textPrimary"
             android:textColorHint="@color/textSecondary"
             android:textSize="@dimen/text_body" />
+
+        <!-- A search that found nothing says so. -->
+        <TextView
+            android:id="@+id/editWidgetNoMatches"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="@dimen/space_md"
+            android:textColor="@color/textSecondary"
+            android:textSize="@dimen/text_body"
+            android:visibility="gone" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/editWidgetRecycler"

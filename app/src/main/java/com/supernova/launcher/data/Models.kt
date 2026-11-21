@@ -19,8 +19,8 @@ import com.supernova.launcher.ui.LabelFont
 import com.supernova.launcher.ui.LaunchAnimation
 import com.supernova.launcher.ui.PopupMenuStyle
 import com.supernova.launcher.ui.ScrollEffect
+import com.supernova.launcher.ui.NavBarButtons
 import com.supernova.launcher.ui.StatusBarIcons
-import com.supernova.launcher.ui.TopRowSort
 import com.supernova.launcher.ui.theme.AccentColor
 import com.supernova.launcher.ui.theme.PaletteSourceMode
 import com.supernova.launcher.ui.theme.ThemeMode
@@ -101,11 +101,18 @@ data class LauncherItem(
     // photo), shape and style. Its label stays in `label`; the shortcut's
     // own picture stays in iconBase64 and comes back when the custom icon
     // is reset.
-    val shortcutEdit: AppOverride? = null
+    val shortcutEdit: AppOverride? = null,
+    // APP items only: this copy's own edit from its Edit on the home screen,
+    // the dock or a folder. Its name and hidden label are the copy's own; an
+    // icon, shape or style set here is too, and with none set the copy draws
+    // the drawer's (appOverrides) - see AppItemEdits.
+    val appEdit: AppOverride? = null
 )
 
-// Per-app customization, keyed "userSerial/pkg/cls" in LauncherModel so one
-// override reaches the drawer entry and every pinned copy of the app.
+// Per-app customization, keyed "userSerial/pkg/cls" in LauncherModel: the
+// drawer entry's. A placed copy of the app draws its icon too unless it has
+// an icon of its own (LauncherItem.appEdit); names and hidden labels are each
+// copy's own.
 @Serializable
 data class AppOverride(
     val customLabel: String? = null,
@@ -128,7 +135,7 @@ data class AppOverride(
             iconVariant == null
 }
 
-const val CURRENT_MODEL_VERSION = 5
+const val CURRENT_MODEL_VERSION = 6
 
 @Serializable
 data class LauncherModel(
@@ -140,7 +147,10 @@ data class LauncherModel(
     val defaultPage: Int = 0,
     val appOverrides: Map<String, AppOverride> = emptyMap(),
     // v5: custom feed-page cards (see feed/FeedCards.kt).
-    val feedCards: List<com.supernova.launcher.feed.FeedCard> = emptyList()
+    val feedCards: List<com.supernova.launcher.feed.FeedCard> = emptyList(),
+    // The feed's card order, built-in cards included (feed/FeedOrder.kt);
+    // empty = the order it always had. Default-supplied, so no migration.
+    val feedOrder: List<String> = emptyList()
 )
 
 @Serializable
@@ -240,8 +250,8 @@ data class LauncherPrefs(
     val drawerTabAlign: DrawerTabAlign = DrawerTabAlign.START,
     // Isolate tabs: a sideways swipe on the list stays on the tab.
     val drawerTabsNoSwipe: Boolean = false,
-    // The top row over the drawer list (recently opened apps by default,
-    // drawerTopRowSort).
+    val drawerTabsLoop: Boolean = false,
+    // The top row over the drawer list: the recently opened apps.
     val drawerFrequentRow: Boolean = true,
     // Keep the scroll position across close/reopen instead of resetting to top.
     val drawerRememberPosition: Boolean = false,
@@ -283,16 +293,15 @@ data class LauncherPrefs(
     // Fast-scroller active-letter color; "" follows the drawer accent.
     val drawerScrubberColor: String = "",
     // The buttons inside the drawer search field (comma-joined
-    // SearchBarChip names, see SearchBarButtons); "" = none.
-    val drawerActionButtons: String = "",
+    // SearchBarChip names, see SearchBarButtons); "" = none. Play Store
+    // until changed.
+    val drawerActionButtons: String = "PLAY_STORE",
     // Apps living in TAB-type drawer groups leave the All tab (tab
     // isolation); folder-type groups always did.
     val drawerIsolateTabs: Boolean = false,
     val drawerSort: DrawerSort = DrawerSort.ALPHA,
-    // The drawer top row's apps and order; recently used by default.
-    val drawerTopRowSort: TopRowSort = TopRowSort.RECENTLY_USED,
-    // The sort pickers at the top of the drawer's list and its top row.
-    val drawerSortButtons: Boolean = true,
+    // The sort button at the top of the drawer's list. Off by default.
+    val drawerSortButtons: Boolean = false,
     // On by default; it only shows with a work profile.
     val drawerWorkTab: Boolean = true,
     // Name of the group tab selected on open ("" = All), and whether the
@@ -325,8 +334,9 @@ data class LauncherPrefs(
     val iconSwipeIndicator: Boolean = true,
     // Draw adaptive icons' monochrome layer, palette-tinted (API 33+).
     val themedIcons: Boolean = false,
-    // Synthesize a monochrome layer for apps that ship none (D8).
-    val themedIconsAutogen: Boolean = false,
+    // Synthesize a monochrome layer for apps that ship none (D8). On, so
+    // Themed icons alone themes every app.
+    val themedIconsAutogen: Boolean = true,
     // Screen-lock mechanism: ACCESSIBILITY (default) or DEVICE_ADMIN.
     val lockMethod: LockMethod = LockMethod.ACCESSIBILITY,
     val badgeColor: String = "",
@@ -338,12 +348,13 @@ data class LauncherPrefs(
     val badgeCornerRadius: Int = BadgeLimits.CORNER_ROUND,
     // A thin dark ring around every badge (Outline).
     val badgeOutline: Boolean = true,
+    // The badge centred near the icon's corner, half outside it (#250).
+    val badgeOnCorner: Boolean = false,
     val folderPreviewStyle: FolderPreviewStyle = FolderPreviewStyle.GRID,
     // Draw the first member large in the preview, remaining members small.
     val folderPrioritizeFirst: Boolean = false,
     // 0 = derive from member count.
     val folderColumns: Int = 0,
-    val folderSortAz: Boolean = false,
     val folderCloseOnLaunch: Boolean = true,
     // Scale of member icons inside the open folder window; matchDesktop
     // follows iconScale instead and hides the slider.
@@ -366,8 +377,6 @@ data class LauncherPrefs(
     val folderIconShape: String = "",
     // 2dp FOLDER-accent stroke around the plate.
     val folderIconOutline: Boolean = false,
-    // Member icons clipped inside the plate vs allowed to overflow it.
-    val folderClipToBg: Boolean = true,
     // Plate uses the resolved FOLDER window surface instead of the
     // translucent default plate.
     val folderMatchWindowColor: Boolean = false,
@@ -395,7 +404,8 @@ data class LauncherPrefs(
     val widgetCornerRadius: Int = 16,
     val showScrims: Boolean = false,
     val wallpaperZoom: Boolean = true,
-    val autoAddApps: Boolean = false,
+    // New installs go on the home screen. On by default.
+    val autoAddApps: Boolean = true,
     val labelFont: LabelFont = LabelFont.DEFAULT,
     // One line everywhere by default: a wrapped name reads as a
     // broken word ("OpenWeathe" over "r"). Per-surface overrides in
@@ -414,6 +424,8 @@ data class LauncherPrefs(
     val dockPaddingV: Int = 0,
     // Global search: web engine (WebProvider name) and per-provider toggles.
     val searchWebProvider: WebProvider = WebProvider.GOOGLE,
+    // The search URL for the Custom engine, %s where the query goes.
+    val searchWebCustomUrl: String = "",
     val searchContacts: Boolean = false,
     val searchShortcuts: Boolean = true,
     // Folder names (workspace and drawer groups) as search results. Off by
@@ -458,6 +470,9 @@ data class LauncherPrefs(
     // runs the action (the behavior before this pref existed). Off runs the
     // action straight away, wherever the workspace was.
     val homeButtonOnMainPage: Boolean = true,
+    // On (the default): Home from an app, from recents or the screen turning
+    // off goes to the default page. Off keeps the page the user left (#317).
+    val homeReturnToDefaultPage: Boolean = true,
     // Desktop/drawer search bar configuration as one JSON document (see
     // ui/SearchBarConfig); "" = defaults (no desktop bar, local drawer filter).
     val searchBarConfig: String = "",
@@ -486,8 +501,8 @@ data class LauncherPrefs(
     val undoRemove: Boolean = true,
     // Master animation kill switch consulted via ui/Animations.enabled.
     val disableAnimations: Boolean = false,
-    // Playback speed multiplier (ui/AnimationSpeed): SLOW/DEFAULT/FAST/FASTER.
-    val animationSpeed: AnimationSpeed = AnimationSpeed.DEFAULT,
+    // Playback speed multiplier (ui/AnimationSpeed): RELAXED or FAST.
+    val animationSpeed: AnimationSpeed = AnimationSpeed.RELAXED,
     // App-launch transition style (ui/LaunchAnimation name). REVEAL is the
     // pre-phase-6 clip-reveal behavior; Adaptive icon is the default.
     val launchAnimation: LaunchAnimation = LaunchAnimation.ADAPTIVE_ICON,
@@ -496,9 +511,8 @@ data class LauncherPrefs(
     val hideStatusBar: Boolean = false,
     val darkStatusIcons: StatusBarIcons = StatusBarIcons.AUTO,
     val transparentNav: Boolean = true,
-    // Workspace icons rock back and forth while a drag is live, on out
-    // of the box. Off keeps the grid still.
-    val iconWiggle: Boolean = true,
+    // Nav bar button tint (ui/NavBarButtons); AUTO follows the theme.
+    val navBarButtons: NavBarButtons = NavBarButtons.AUTO,
     // The status bar's twin of transparentNav: off paints it black over the
     // wallpaper instead of letting the wallpaper through.
     val transparentStatus: Boolean = true,
@@ -513,6 +527,9 @@ data class LauncherPrefs(
     val feedEnabled: Boolean = true,
     val feedEdgeSwipe: Boolean = true,
     val feedShowSearch: Boolean = true,
+    // The buttons at the feed bar's right end, as drawerActionButtons; the
+    // date and Settings (the Feed page) until changed.
+    val feedBarButtons: String = "DATE,SETTINGS",
     val feedShowFrequent: Boolean = true,
     // A strip of app shortcuts pulled from the most-launched apps (D7).
     val feedShowShortcuts: Boolean = true,
@@ -572,9 +589,29 @@ data class DrawerGroup(
     val iconPack: String? = null,
     val iconName: String? = null,
     val iconBase64: String? = null,
-    val iconRaw: Boolean = false
+    val iconRaw: Boolean = false,
+    // The group's identity: what tabs (folder keys), the default tab and
+    // every edit look it up by. The name is only a label, so two groups may
+    // share one. A group stored before ids existed has its name as its id,
+    // which is what tabs and the default tab already hold for it; a new
+    // group gets a fresh one (newId).
+    val id: String = name
 ) {
     val hasCustomIcon: Boolean get() = iconName != null || !iconBase64.isNullOrEmpty()
+
+    // A home or dock folder made from this drawer folder (Add to Home, or
+    // a drag) wears the same icon: the pack drawable, else the photo, and
+    // Reshape as it was set.
+    fun withIconOn(folder: LauncherItem): LauncherItem {
+        if (!hasCustomIcon) return folder
+        val packIcon = iconName != null
+        return folder.copy(
+            customIconPack = iconPack.takeIf { packIcon },
+            customIconName = iconName,
+            iconBase64 = iconBase64.takeIf { !packIcon },
+            iconRaw = iconRaw
+        )
+    }
 
 
     // "Name|key1,key2|order|type|smart|keep" - the order segment is absent in
@@ -583,7 +620,9 @@ data class DrawerGroup(
     // older entries and decode as TAB/user-created; old builds split('|') and
     // read parts 0..2, so a FOLDER group degrades to a TAB there. The keep
     // segment is "keep", "move" or absent (null). A custom icon adds pack,
-    // name, "raw" and photo after it; none of them can hold a "|".
+    // name, "raw" and photo after it; none of them can hold a "|". An id
+    // other than the name comes last; an entry without one has its name as
+    // its id, so groups stored before ids keep the identity tabs hold them by.
     fun encode(): String {
         val base = "$name|${members.joinToString(",")}|$order|${type.name}|${if (smart) SMART_MARKER else ""}"
         val keep = when (keepInMain) {
@@ -591,10 +630,12 @@ data class DrawerGroup(
             true -> KEEP_MARKER
             false -> MOVE_MARKER
         }
+        val raw = if (iconRaw) RAW_MARKER else ""
+        val icon = "${iconPack.orEmpty()}|${iconName.orEmpty()}|$raw|${iconBase64.orEmpty()}"
         return when {
-            hasCustomIcon ->
-                "$base|$keep|${iconPack.orEmpty()}|${iconName.orEmpty()}|" +
-                    "${if (iconRaw) RAW_MARKER else ""}|${iconBase64.orEmpty()}"
+            // An id other than the name follows every other segment.
+            id != name -> "$base|$keep|$icon|$id"
+            hasCustomIcon -> "$base|$keep|$icon"
             keepInMain == null -> base
             else -> "$base|$keep"
         }
@@ -609,7 +650,16 @@ data class DrawerGroup(
         private const val ICON_NAME_FIELD = 7
         private const val ICON_RAW_FIELD = 8
         private const val ICON_PHOTO_FIELD = 9
+        private const val ID_FIELD = 10
         private const val RAW_MARKER = "raw"
+        private const val ID_PREFIX = "#"
+
+        // A fresh id: "#" and 12 random hex digits, never a ',' or
+        // '|'. A group named exactly that from before ids is not a concern.
+        fun newId(): String =
+            ID_PREFIX + java.util.UUID.randomUUID().toString().replace("-", "").take(ID_LENGTH)
+
+        private const val ID_LENGTH = 12
 
         fun decode(raw: String): DrawerGroup? {
             val parts = raw.split('|')
@@ -631,7 +681,8 @@ data class DrawerGroup(
                 iconPack = parts.getOrNull(ICON_PACK_FIELD)?.ifEmpty { null },
                 iconName = parts.getOrNull(ICON_NAME_FIELD)?.ifEmpty { null },
                 iconBase64 = parts.getOrNull(ICON_PHOTO_FIELD)?.ifEmpty { null },
-                iconRaw = parts.getOrNull(ICON_RAW_FIELD) == RAW_MARKER
+                iconRaw = parts.getOrNull(ICON_RAW_FIELD) == RAW_MARKER,
+                id = parts.getOrNull(ID_FIELD)?.takeIf { it.isNotBlank() } ?: name
             )
         }
     }
@@ -645,6 +696,8 @@ data class BackupPayload(
     val prefs: LauncherPrefs
 )
 
+// Serializable for AppListCache, the drawer's list kept between runs.
+@Serializable
 data class LaunchableApp(
     val packageName: String,
     val className: String,
@@ -654,7 +707,10 @@ data class LaunchableApp(
     // Resolved from the app's override so list surfaces can honor it.
     val hideLabel: Boolean = false,
     // In the private space: drawer and search only, never the home screen.
-    val privateSpace: Boolean = false
+    val privateSpace: Boolean = false,
+    // In a work profile: the drawer's Work tab. A clone profile's apps
+    // (dual apps) are not work apps and stay on the personal list.
+    val work: Boolean = false
 )
 
 data class PrivateSpace(
