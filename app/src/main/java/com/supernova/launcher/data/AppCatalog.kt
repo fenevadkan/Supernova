@@ -108,7 +108,7 @@ class AppCatalog(
                     userSerial = serial,
                     installTime = info.firstInstallTime,
                     privateSpace = isPrivate,
-                    work = isWork
+                    work = isWork,
                     sizeBytes = sizes.getOrPut("$serial/${component.packageName}") { installedSize(info) },
                     privateSpace = isPrivate
                 )
