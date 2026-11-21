@@ -89,6 +89,7 @@ class AppCatalog(
 
     fun listLaunchableApps(): List<LaunchableApp> {
         val infoCache = mutableMapOf<String, LauncherActivityInfo>()
+        val sizes = mutableMapOf<String, Long>()
         val privateUser = privateSpaceUser()
         val self = android.os.Process.myUserHandle()
         val apps = launcherApps.profiles.flatMap { user ->
@@ -108,6 +109,8 @@ class AppCatalog(
                     installTime = info.firstInstallTime,
                     privateSpace = isPrivate,
                     work = isWork
+                    sizeBytes = sizes.getOrPut("$serial/${component.packageName}") { installedSize(info) },
+                    privateSpace = isPrivate
                 )
             }
         }.let { apps -> LabelOrder.sorted(apps) { it.label } }
@@ -553,6 +556,15 @@ class AppCatalog(
             userSerial = userSerial,
             installTime = info.firstInstallTime
         )
+    }
+
+    // The app's APKs on disk, the "App size" line of its system info page.
+    // Data and cache would need usage access (StorageStatsManager), so they
+    // are left out; a file that can't be read counts as nothing.
+    private fun installedSize(info: LauncherActivityInfo): Long {
+        val app = info.applicationInfo
+        val paths = listOfNotNull(app.sourceDir) + app.splitSourceDirs.orEmpty()
+        return paths.sumOf { path -> runCatching { java.io.File(path).length() }.getOrDefault(0L) }
     }
 
     // ApplicationInfo.category for Smart Folders; UNDEFINED when the package
