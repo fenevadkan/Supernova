@@ -10,9 +10,9 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-      - name: Build Debug APK
-        run: chmod +x gradlew && ./gradlew assembleRelease
+      - name: Build APK
+        run: chmod +x gradlew && ./gradlew assembleRelease --refresh-dependencies
       - uses: actions/upload-artifact@v4
         with:
-          name: Supernova-Debug
+          name: Supernova
           path: app/build/outputs/apk/release/*.apk
