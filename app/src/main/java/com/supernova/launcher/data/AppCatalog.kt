@@ -111,6 +111,7 @@ class AppCatalog(
                     work = isWork,
                     sizeBytes = sizes.getOrPut("$serial/${component.packageName}") {
 			 installedSize(info)
+                    }
                 )
             }
         }.let { apps -> LabelOrder.sorted(apps) { it.label } }
