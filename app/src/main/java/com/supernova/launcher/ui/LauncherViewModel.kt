@@ -176,6 +176,7 @@ class LauncherViewModel(
     private var appliedThemedSig: String? = null
     private var appliedNight: Boolean? = null
     private var autoBackupWritten = false
+    private var shortcutsRepinned = false
 
     // Whether each of the two icon-configuration collectors has applied its
     // first emission. The startup scan waits for both: a warm that runs
@@ -926,6 +927,21 @@ class LauncherViewModel(
             listOfNotNull(searchBarWidget.takeIf { it != 0 })).toSet()
     }
 
+    // The widgets Android's own restore re-bound under fresh ids: the layout
+    // and the search bar's replaced widget follow the map, and come up live
+    // with the settings their apps kept. False while the layout can't be
+    // read - the map then waits for a later start instead of being dropped.
+    suspend fun adoptRestoredWidgetIds(oldToNew: Map<Int, Int>): Boolean {
+        val bound = widgetBoundCheck()
+        if (!repository.adoptRestoredWidgetIds(oldToNew, bound)) return false
+        val prefs = preferences.snapshot()
+        val moved = oldToNew[prefs.searchBarWidgetId]
+        if (moved != null && bound(moved, prefs.searchBarWidgetProvider)) {
+            preferences.setSearchBarWidget(moved, prefs.searchBarWidgetProvider)
+        }
+        return true
+    }
+
     fun setWidgetId(itemId: String, appWidgetId: Int) = persist { repository.setWidgetId(itemId, appWidgetId) }
 
     fun resizeWidget(
@@ -1572,6 +1588,8 @@ class LauncherViewModel(
 
     fun addPage() = persist { repository.addPage() }
 
+    fun addPageFirst() = persist { repository.addPageFirst() }
+
     fun removePage(page: Int, onRemoved: (() -> Unit)? = null) {
         viewModelScope.launch { if (repository.removePage(page)) onRemoved?.invoke() }
     }
@@ -1668,6 +1686,18 @@ class LauncherViewModel(
         viewModelScope.launch {
             val prefs = state.value.prefs
             withContext(Dispatchers.Default) { repository.writeAutoBackup(prefs) }
+        }
+    }
+
+    // Once per session, with the real layout loaded: the home screen's app
+    // shortcuts pinned again where a pin went missing - a layout restored
+    // before this launcher held the home role couldn't pin them then.
+    fun repinShortcutsOnce() {
+        if (shortcutsRepinned) return
+        shortcutsRepinned = true
+        val items = state.value.model.items
+        viewModelScope.launch(Dispatchers.IO) {
+            com.supernova.launcher.data.ShortcutPins.repin(getApplication(), items)
         }
     }
 

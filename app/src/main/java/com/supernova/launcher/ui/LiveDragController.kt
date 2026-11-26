@@ -206,6 +206,7 @@ class LiveDragController(
     // A drag hovering past the last page asked for a new one; once the model
     // carries it (the host's state observer), the drag is carried over to it.
     fun carryOverToNewPage() {
+        carryOverToFrontPage()
         if (pendingDragPageFlip in 0 until host.workspaceAdapter.realPageCount) {
             val page = pendingDragPageFlip
             pendingDragPageFlip = -1
@@ -221,6 +222,20 @@ class LiveDragController(
                 pager.setCurrentItem(adapter.centerPosition(page), true)
             }
         }
+    }
+
+    // The same before the first page (#376). The pages moved one along, so
+    // the pager's position shows the page that followed: back onto the old
+    // first page, now the second, then slide on to the new one.
+    private fun carryOverToFrontPage() {
+        val adapter = host.workspaceAdapter
+        if (pendingFrontPageCount < 0 || adapter.realPageCount < pendingFrontPageCount) return
+        pendingFrontPageCount = -1
+        if (!dragLayer.isDragging) return
+        val pager = binding.workspacePager
+        pager.setCurrentItem(adapter.centerPosition(1), false)
+        pager.setCurrentItem(adapter.centerPosition(0), Animations.scrollPages(viewModel.state.value.prefs))
+        pager.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
     }
 
     // Where that press landed on screen: a drag's picture is held at the
@@ -285,11 +300,9 @@ class LiveDragController(
     private var dragTarget: DragTarget = DragTarget.None
     var settlingItemId: String? = null
         private set
-    // The page showing its drag grid (cell-corner sparkles and target
-    // outline), if any; the grid's two halves are views in that page.
-    private var dragGridPage: ViewGroup? = null
-    private val dragGridLayers by lazy { intArrayOf(R.id.dragSparkles, R.id.dragOutline) }
-    private val dragGridRect = RectF()
+    // The drag grid on the hovered page: sparkles on the cell corners around
+    // the finger, and an outline on the cells the drop would take.
+    private val dragGrid = DragGridOverlay { viewModel.state.value.prefs }
     // The finger's last position, and where the hovered page sat on screen
     // when it was last hovered (see dragPageWatch).
     private var lastDragRawX = 0f
@@ -302,6 +315,9 @@ class LiveDragController(
     // A page addPage just opened for a drag past the last page; the pager
     // moves there once the adapter has it.
     private var pendingDragPageFlip = -1
+
+    // The page count that shows a page asked for before the first, or -1.
+    private var pendingFrontPageCount = -1
     private val dropZoneActions = linkedMapOf<View, (DragPayload) -> Unit>()
     private val hitLocation = IntArray(2)
 
@@ -1050,7 +1066,7 @@ class LiveDragController(
             is DragTarget.Zone -> target.view.setBackgroundColor(0)
             is DragTarget.Workspace -> {
                 drops.cancelReorderPreview(animate = true)
-                hideDragGrid(animate = true)
+                dragGrid.hide(animate = true)
             }
             else -> Unit
         }
@@ -1088,7 +1104,7 @@ class LiveDragController(
         target.canvas.getLocationOnScreen(hoveredPageLocation)
         val prefs = viewModel.state.value.prefs
         val p = workspacePlacement(target.canvas, prefs, point.x, point.y)
-        showDragGrid(
+        dragGrid.show(
             target.canvas, drops.hoverTargetRect(payload, p[0].toInt(), p[1].toInt(), p[4], p[5])?.first, rawX, rawY
         )
         drops.onDragOverWorkspace(
@@ -1097,39 +1113,6 @@ class LiveDragController(
             max(1, target.canvas.height / max(1, prefs.gridRows)),
             p[0].toInt(), p[1].toInt(), p[4], p[5]
         )
-    }
-
-    // The drag grid on the hovered page: sparkles on the cell corners
-    // around the finger, and an outline on the cells the drop would take
-    // (`target`, in cells). The grid lives in the page, around the canvas, so
-    // it slides away with the page on a flip.
-    private fun showDragGrid(canvas: ViewGroup, target: WorkspaceGeometry.CellRect?, rawX: Float, rawY: Float) {
-        val page = canvas.parent as? ViewGroup ?: return hideDragGrid(animate = true)
-        if (page !== dragGridPage) hideDragGrid(animate = true)
-        dragGridPage = page
-        val prefs = viewModel.state.value.prefs
-        // The grid views fill the page, so page coordinates are theirs.
-        page.getLocationOnScreen(hitLocation)
-        dragGridRect.set(
-            canvas.left.toFloat(), canvas.top.toFloat(), canvas.right.toFloat(), canvas.bottom.toFloat()
-        )
-        val slideMs = Animations.duration(prefs, DRAG_GRID_SLIDE_MS)
-        val fadeMs = Animations.duration(prefs, DRAG_GRID_FADE_MS)
-        for (id in dragGridLayers) {
-            page.findViewById<com.supernova.launcher.ui.DragGridView>(id)?.update(
-                prefs.gridCols, prefs.gridRows, dragGridRect,
-                rawX - hitLocation[0], rawY - hitLocation[1], target, slideMs, fadeMs
-            )
-        }
-    }
-
-    private fun hideDragGrid(animate: Boolean) {
-        val page = dragGridPage ?: return
-        dragGridPage = null
-        val fadeMs = if (animate) Animations.duration(viewModel.state.value.prefs, DRAG_GRID_FADE_MS) else 0L
-        for (id in dragGridLayers) {
-            page.findViewById<com.supernova.launcher.ui.DragGridView>(id)?.dismiss(fadeMs)
-        }
     }
 
     // Edge hover: a finger held in the band along either side of the
@@ -1192,13 +1175,14 @@ class LiveDragController(
         val adapter = host.workspaceAdapter
         val next = pager.currentItem + direction
         // A drag never wraps round, infinite scroll or not: past the last
-        // page is where a new page opens (#120), and before the first is the
-        // end. Edit mode's add-page slot is not a page to flip onto either.
+        // page is where a new page opens (#120), and with infinite scroll so
+        // is before the first (#376); without it, that is the end. Edit
+        // mode's add-page slot is not a page to flip onto either.
         val page = adapter.realPage(pager.currentItem)
         val wraps = page + direction !in 0 until adapter.realPageCount
         if (!wraps && next in 0 until adapter.itemCount && !adapter.isAddPage(next)) {
             drops.cancelReorderPreview(animate = false)
-            hideDragGrid(animate = true)
+            dragGrid.hide(animate = true)
             pager.setCurrentItem(next, Animations.scrollPages(viewModel.state.value.prefs))
             pager.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             return true
@@ -1207,11 +1191,14 @@ class LiveDragController(
         // carries the drag over (observeState) and the hover then stops.
         // At the page limit addPage adds nothing, and the request, never
         // answered, used to block every later one until a restart.
-        if (direction > 0 && pendingDragPageFlip < 0 && activeDragPayload != null &&
-            host.workspaceAdapter.realPageCount < LauncherRepository.MAX_PAGES
-        ) {
-            pendingDragPageFlip = host.workspaceAdapter.realPageCount
+        val canAdd = pendingDragPageFlip < 0 && pendingFrontPageCount < 0 && activeDragPayload != null &&
+            adapter.realPageCount < LauncherRepository.MAX_PAGES
+        if (canAdd && direction > 0) {
+            pendingDragPageFlip = adapter.realPageCount
             viewModel.addPage()
+        } else if (canAdd && page == 0 && viewModel.state.value.prefs.infiniteScroll) {
+            pendingFrontPageCount = adapter.realPageCount + 1
+            viewModel.addPageFirst()
         }
         return false
     }
@@ -1223,7 +1210,7 @@ class LiveDragController(
         cancelEdgeFlip()
         watchDragPage(false)
         hideDropTargetBar()
-        hideDragGrid(animate = true)
+        dragGrid.hide(animate = true)
         stopIconWiggle()
         val payload = activeDragPayload ?: return cancel()
         val prefs = viewModel.state.value.prefs
@@ -1491,7 +1478,7 @@ class LiveDragController(
         cancelEdgeFlip()
         watchDragPage(false)
         hideDropTargetBar()
-        hideDragGrid(animate = false)
+        dragGrid.hide(animate = false)
         stopIconWiggle()
         leaveDragTarget(dragTarget)
         dragTarget = DragTarget.None
@@ -1595,6 +1582,7 @@ class LiveDragController(
         flipPointerId = -1
         // A page asked for during the drag no longer has a drag to carry.
         pendingDragPageFlip = -1
+        pendingFrontPageCount = -1
         val prefs = viewModel.state.value.prefs
         dragSourceView = null
         dragFromDrawer = false
@@ -1739,8 +1727,6 @@ class LiveDragController(
         private const val DOCK_MERGE_MS = 120L
         // How far a second finger travels sideways to turn the page.
         private const val FLIP_SWIPE_DP = 48
-        private const val DRAG_GRID_FADE_MS = 150L
-        private const val DRAG_GRID_SLIDE_MS = 120L
         private const val EDGE_FLIP_DP = 22
         private const val EDGE_FLIP_DELAY_MS = 450L
         private const val EDGE_FLIP_REPEAT_MS = 750L

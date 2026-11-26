@@ -705,7 +705,7 @@ class LauncherActivity :
         setupEditMode()
         observeState()
         maybeShowOnboarding()
-        widgets.sweepOrphanIds()
+        widgets.adoptRestoredIdsAndSweep()
         observeBadges()
         restoreDockPage()
 
@@ -1403,6 +1403,20 @@ class LauncherActivity :
             // settings root's reason (8dc7642).
             defaultFocusHighlightEnabled = false
             com.supernova.launcher.ui.PageFlingSettle.attach(this)
+            // A scroll effect leaves every page out of view see-through, and
+            // a page that has slid out of the list keeps that look in its
+            // cache. Turned off (None, or Disable animations), the effect
+            // resets only the pages laid out then, and with no transformer
+            // left nothing reset the rest: a page came back invisible, its
+            // widgets and icons still taking taps (#374).
+            addOnChildAttachStateChangeListener(object :
+                androidx.recyclerview.widget.RecyclerView.OnChildAttachStateChangeListener {
+                override fun onChildViewAttachedToWindow(view: View) {
+                    if (appliedScrollEffect == ScrollEffect.NONE) PageTransformers.resetTransforms(view)
+                }
+
+                override fun onChildViewDetachedFromWindow(view: View) = Unit
+            })
         }
         binding.workspacePager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
@@ -1945,7 +1959,10 @@ class LauncherActivity :
                     if (::editMode.isInitialized) editMode.onPageChanged()
                     // Snapshot once the real layout has arrived, so a bad edit
                     // later in the session is recoverable.
-                    if (state.model.items.isNotEmpty()) viewModel.writeAutoBackupOnce()
+                    if (state.model.items.isNotEmpty()) {
+                        viewModel.writeAutoBackupOnce()
+                        viewModel.repinShortcutsOnce()
+                    }
                     // Its own color, or the labels' as the swipe arrow has.
                     binding.pageIndicator.configure(
                         state.prefs.pageIndicatorStyle,
@@ -3113,7 +3130,16 @@ class LauncherActivity :
                 maybeAutoCloseDock()
                 maybeAutoCloseDrawer()
             }.onFailure {
-                Toast.makeText(this, R.string.shortcut_failed, Toast.LENGTH_SHORT).show()
+                // A pin-only shortcut (an app's "add to home screen") doesn't
+                // outlive the install that pinned it: a reinstall and restore
+                // brings the icon back but not the shortcut, and only its app
+                // can make it again.
+                if (shortcutInfo(packageName, shortcutId, userSerial) == null) {
+                    val app = installedApp(packageName, userSerial)?.label ?: packageName
+                    Toast.makeText(this, getString(R.string.shortcut_gone, app), Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, R.string.shortcut_failed, Toast.LENGTH_SHORT).show()
+                }
             }.isSuccess
         }
     }
@@ -5275,10 +5301,57 @@ class LauncherActivity :
         // In edit mode icons, folders and widgets neither launch, open nor
         // scroll: a tap anywhere on a page closes edit mode, a long-press
         // lifts the page (#348).
-        (canvas as? com.supernova.launcher.ui.WorkspaceCanvas)?.itemsInert =
-            { ::editMode.isInitialized && editMode.isOpen }
+        (canvas as? com.supernova.launcher.ui.WorkspaceCanvas)?.let { page ->
+            page.itemsInert = { ::editMode.isInitialized && editMode.isOpen }
+            page.onPageTap = { event -> sendWallpaperTap(page, event) }
+        }
         widgets.onPageBound(canvas)
     }
+
+    // Hands a tap on the home screen to the wallpaper (#379). A live
+    // wallpaper that takes touches - a KLWP preset, say - hears nothing
+    // unless the launcher sends the standard tap command, and its own
+    // workaround for a launcher that doesn't (reading the touch screen
+    // itself) then also fires under whatever app is on top. The position is
+    // the tap's on screen, where the wallpaper draws; the command is the
+    // lifted pointer's, as Launcher3 and the reference launcher send it:
+    // COMMAND_TAP for the last finger up, COMMAND_SECONDARY_TAP for one of
+    // several.
+    private fun sendWallpaperTap(page: View, event: MotionEvent) {
+        if (!wallpaperTakesTaps()) return
+        val token = binding.root.windowToken ?: return
+        val onScreen = IntArray(2)
+        page.getLocationOnScreen(onScreen)
+        val pointer = event.actionIndex
+        val command = if (event.actionMasked == MotionEvent.ACTION_UP) {
+            android.app.WallpaperManager.COMMAND_TAP
+        } else {
+            android.app.WallpaperManager.COMMAND_SECONDARY_TAP
+        }
+        com.supernova.launcher.ui.WallpaperOffsets.command(
+            context = this,
+            token = token,
+            name = command,
+            x = onScreen[0] + event.getX(pointer).toInt(),
+            y = onScreen[1] + event.getY(pointer).toInt()
+        )
+    }
+
+    // Only a tap the home screen itself is showing for. Edit mode's own tap
+    // closes edit mode, and a tap with a widget's resize frame up takes the
+    // frame down (onCanvasTap): the launcher acted on those, so they are not
+    // the wallpaper's. The drawer, search, the feed and the previews sit over
+    // the page and take its touches themselves, and a swipe that opens one
+    // cancels the page's stream mid-gesture - but one that is already coming
+    // in as the finger lifts must not slip a tap through underneath it, as
+    // the wallpaper's own "direct touch" mode does.
+    private fun wallpaperTakesTaps(): Boolean =
+        !(::editMode.isInitialized && editMode.isOpen) &&
+            widgets.activeResizeFrame == null &&
+            !desktopPreviews.isShowing &&
+            !(::drawer.isInitialized && drawer.isVisible) &&
+            !(::search.isInitialized && search.isOpen) &&
+            !feedOpen
 
     override fun reportWidgetSize(item: LauncherItem, view: View) = widgets.reportWidgetSize(item, view)
 

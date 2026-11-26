@@ -600,6 +600,25 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
+    // A new empty page before the first (#376): every page and the home page
+    // move one along. Nothing at the page limit.
+    suspend fun addPageFirst() {
+        mutate { current ->
+            val shown = maxOf(
+                current.pageCount,
+                (current.items.filter { it.container == ContainerType.WORKSPACE }.maxOfOrNull { it.page } ?: -1) + 1
+            )
+            if (shown >= MAX_PAGES) return@mutate current
+            current.copy(
+                pageCount = shown + 1,
+                defaultPage = current.defaultPage + 1,
+                items = current.items.map {
+                    if (it.container == ContainerType.WORKSPACE) it.copy(page = it.page + 1) else it
+                }
+            )
+        }
+    }
+
     // False when the page wasn't removed: it holds something, or is the last.
     suspend fun removePage(page: Int): Boolean {
         var removed = false
@@ -798,6 +817,19 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
+    // The layout follows the ids Android's own restore re-bound (see
+    // WidgetHostRestore): the widgets it describes are already live and still
+    // hold their settings. False while the layout can't be read, so the map
+    // is kept for a later start rather than dropped.
+    suspend fun adoptRestoredWidgetIds(
+        oldToNew: Map<Int, Int>,
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+    ): Boolean {
+        if (!modelReadable()) return false
+        mutate { current -> RestoredWidgets.withRemappedIds(current, oldToNew, widgetBound) }
+        return true
+    }
+
     // Sets a bound widget as a card's featured content. The old host id (if
     // any) is freed by the caller before this runs.
     // A widget restored without a live id has one again.
@@ -987,6 +1019,8 @@ class LauncherRepository(private val context: Context) {
                 prefs.remove(StoreKeys.retiredFolderSortAz)
             }
         }
+        // A backup from another install comes without its shortcut pins.
+        ShortcutPins.repin(context, validated.items)
 
         return ImportResult(
             restored = validated.items.size,

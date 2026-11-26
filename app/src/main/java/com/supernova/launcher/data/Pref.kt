@@ -124,7 +124,6 @@ object Pref {
     private const val ICON_SCALE_MAX = 2f
     private const val BADGE_SCALE_MIN = 0.6f
     private const val BADGE_SCALE_MAX = 1.6f
-    private const val DRAWER_OPACITY_MIN = 0.2f
     private const val DOCK_COUNT_MIN = 3
     private const val DESKTOP_PADDING_MAX = 48
     private const val WIDGET_PADDING_MAX = 24
@@ -219,7 +218,7 @@ object Pref {
     val drawerPaddingH = int("drawer_padding_h", 0..DESKTOP_PADDING_MAX)
     val drawerPaddingV = int("drawer_padding_v", 0..DESKTOP_PADDING_MAX)
     val drawerMatchDesktop = bool("drawer_match_desktop")
-    val drawerBgOpacity = float("drawer_bg_opacity", DRAWER_OPACITY_MIN..1f)
+    val drawerBgOpacity = float("drawer_bg_opacity", 0f..1f)
     val drawerFastScroller = bool("drawer_fast_scroller")
     val drawerPullToSearch = bool("drawer_pull_to_search")
     val drawerSwipeIndicator = bool("drawer_swipe_indicator")
@@ -287,6 +286,8 @@ object Pref {
     val labelFont = choice("label_font", LabelFont.entries)
     val labelSingleLine = bool("label_single_line")
     val labelEvenRows = bool("label_even_rows")
+    val drawerEvenRows = bool("drawer_even_rows")
+    val folderEvenRows = bool("folder_even_rows")
     val dockInfiniteScroll = bool("dock_infinite_scroll")
     val dockMatchDesktop = bool("dock_match_desktop")
     val dockOverlay = bool("dock_overlay")
