@@ -579,10 +579,11 @@ class FeedController(
         pane.feedRecycler.adapter = adapter
         pane.feedRecycler.itemAnimator = null
         FeedFillPages(adapter, cardBinder) { cardDrag.holding }.attach(pane.feedRecycler)
-        pane.feedRecycler.layoutManager =
-            androidx.recyclerview.widget.LinearLayoutManager(context)
+        val list = pane.feedRecycler
+        list.layoutManager = FeedLayoutManager(context) { list.widgetHolds && !cardDrag.holding }
         cardDrag.attach(pane.feedRecycler)
         pane.feedSearchBar.onTap = { host.onOpenSearch() }
+        pane.feedSearchBar.prefs = { viewModel.state.value.prefs }
         // The feed's Settings button opens the Feed page.
         pane.feedSearchBar.onChip = { chip ->
             (chip == com.supernova.launcher.ui.SearchBarChip.SETTINGS).also { if (it) host.openFeedSettings() }

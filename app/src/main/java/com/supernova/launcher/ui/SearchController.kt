@@ -258,9 +258,13 @@ class SearchController(
         }
     }
 
+    // The top hit's shortcuts by app, for as long as the window is open.
+    private val topHitShortcuts = HashMap<String, List<SearchResult.Shortcut>>()
+
     fun hide() {
         if (!isOpen) return
         isOpen = false
+        topHitShortcuts.clear()
         onHidden()
         val ui = overlay ?: return
         overlaySurface?.orchestrator?.cancel()
@@ -338,8 +342,10 @@ class SearchController(
         binding.searchBackdrop.setOnClickListener { hide() }
 
         // The window is adjustNothing and edge-to-edge, so the panel pads
-        // itself out of the system bars; the IME is allowed to overlap, as it
-        // is in the drawer.
+        // itself out of the system bars. The keyboard overlaps the panel, but
+        // the results pad past it: a list that nearly fits can't be dragged,
+        // so the drag that drops the keyboard never came and its last rows
+        // stayed under it (#284).
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -349,9 +355,21 @@ class SearchController(
             val gutter = WideScreen.gutterPx(
                 view.context, view.resources.displayMetrics.widthPixels - bars.left - bars.right
             )
-            view.setPadding(bars.left + gutter, bars.top, bars.right + gutter, 0)
             val density = view.resources.displayMetrics.density
-            ui.searchResults.setPadding(0, 0, 0, (24 * density).toInt() + bars.bottom)
+            // The floating window stops short of the screen's bottom: only
+            // the part of the keyboard or navigation bar that rises past its
+            // edge covers it.
+            val windowGap = (ui.root.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+            val nav = (bars.bottom - windowGap).coerceAtLeast(0)
+            // Navigation buttons (tappableElement; 0 for a gesture handle)
+            // get a strip of the panel to themselves, so results never
+            // scroll behind them (#324); a handle has the results run under it.
+            val buttons = (insets.getInsets(WindowInsetsCompat.Type.tappableElement()).bottom - windowGap)
+                .coerceIn(0, nav)
+            view.setPadding(bars.left + gutter, bars.top, bars.right + gutter, buttons)
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom - windowGap
+            val covered = (maxOf(nav, ime) - buttons).coerceAtLeast(0)
+            ui.searchResults.setPadding(0, 0, 0, (24 * density).toInt() + covered)
             insets
         }
         root.requestApplyInsets()
@@ -411,7 +429,9 @@ class SearchController(
                 matchedApps = { query ->
                     appProvider.search(query).mapNotNull { (it as? SearchResult.App)?.app }
                 },
-                userForSerial = { viewModel.appCatalog().userForSerial(it) }
+                userForSerial = { viewModel.appCatalog().userForSerial(it) },
+                searchableApps = { viewModel.searchableApps() },
+                otherSmsApps = { com.supernova.launcher.search.SmsApps.others(context.applicationContext) }
             ),
             ContactSearchProvider(context.applicationContext) {
                 viewModel.state.value.prefs.searchContactCards
@@ -515,17 +535,22 @@ class SearchController(
         val app = (results.firstOrNull { it is SearchResult.App } as? SearchResult.App)?.app ?: return null
         if (!app.label.startsWith(query, ignoreCase = true)) return null
         val catalog = viewModel.appCatalog()
-        val shortcuts = catalog.shortcutsFor(app.packageName, app.userSerial)
-            .take(TOP_HIT_MAX_SHORTCUTS)
-            .map { shortcut ->
-                SearchResult.Shortcut(
-                    packageName = app.packageName,
-                    shortcutId = shortcut.id,
-                    label = (shortcut.shortLabel ?: shortcut.longLabel ?: shortcut.id).toString(),
-                    userSerial = app.userSerial,
-                    icon = catalog.shortcutIcon(shortcut)
-                )
-            }
+        // Asked once per app while the window is open: each keystroke used
+        // to read the app's shortcuts and their icons again, on the main
+        // thread, for the same app.
+        val shortcuts = topHitShortcuts.getOrPut("${app.userSerial}/${app.packageName}") {
+            catalog.appShortcuts(app.packageName, app.userSerial)
+                .take(TOP_HIT_MAX_SHORTCUTS)
+                .map { shortcut ->
+                    SearchResult.Shortcut(
+                        packageName = app.packageName,
+                        shortcutId = shortcut.id,
+                        label = (shortcut.shortLabel ?: shortcut.longLabel ?: shortcut.id).toString(),
+                        userSerial = app.userSerial,
+                        icon = catalog.shortcutIcon(shortcut)
+                    )
+                }
+        }
         return SearchResultsAdapter.TopHit(app, shortcuts)
     }
 
@@ -668,7 +693,8 @@ class SearchController(
         val key = listOf(
             prefs.searchBarConfig,
             prefs.styleConfig, prefs.paletteSource, prefs.paletteSeed, prefs.accentColor,
-            prefs.labelSize, prefs.labelColor, prefs.labelFont, prefs.searchWindowMode
+            prefs.labelSize, prefs.labelColor, prefs.labelFont, prefs.searchWindowMode,
+            prefs.searchWindowHint
         )
         if (key == appliedStyle) return
         appliedStyle = key
@@ -690,6 +716,9 @@ class SearchController(
             params.topMargin = if (windowMode) binding.root.dp(48f).toInt() else 0
             params.bottomMargin = if (windowMode) binding.root.dp(160f).toInt() else 0
             ui.root.layoutParams = params
+            // The inset listener measures the window's gap to the screen's
+            // bottom from these margins.
+            ViewCompat.requestApplyInsets(ui.root)
         }
         if (windowMode) {
             ui.root.background = com.supernova.launcher.ui.theme.SurfaceShapes.background(
@@ -701,6 +730,8 @@ class SearchController(
             ui.root.clipToOutline = false
         }
         ui.searchPill.background = windowBarBackground(prefs, bar)
+        ui.searchPill.elevation = windowBarElevation(prefs)
+        ui.searchInput.hint = if (prefs.searchWindowHint) binding.root.context.getString(R.string.search_hint) else null
         ui.searchInput.setTextColor(bar.text)
         ui.searchInput.setHintTextColor((0x99 shl 24) or (bar.text and 0xFFFFFF))
         ui.searchGhost.setTextColor((0x80 shl 24) or (bar.text and 0xFFFFFF))
@@ -713,8 +744,18 @@ class SearchController(
         }
     }
 
+    // The home bar's shadow, as SearchBarView draws it: none on glass, which
+    // would show it through (#324: the window took the bar's shape but not
+    // its shadow).
+    private fun windowBarElevation(prefs: com.supernova.launcher.data.LauncherPrefs): Float {
+        val config = SearchBarConfig.decode(prefs.searchBarConfig).desktop
+        val glass = com.supernova.launcher.data.IconGlass.fromName(config.glass)
+        val shadow = config.shadow && glass == com.supernova.launcher.data.IconGlass.OFF
+        return if (shadow) binding.root.dp(BAR_SHADOW_DP) else 0f
+    }
+
     // The window's bar is the home bar opened up: the same glass or fill,
-    // radius, opacity and outline.
+    // radius, opacity, outline and shadow.
     private fun windowBarBackground(
         prefs: com.supernova.launcher.data.LauncherPrefs,
         bar: com.supernova.launcher.ui.theme.ResolvedSurface
@@ -755,6 +796,7 @@ class SearchController(
 
     private companion object {
         const val OPAQUE = 255
+        const val BAR_SHADOW_DP = 4f
         const val TOP_HIT_MIN_CHARS = 3
         const val TOP_HIT_MAX_SHORTCUTS = 6
     }

@@ -85,6 +85,7 @@ class BackupRoundTripTest {
         labelFont = LabelFont.SERIF,
         labelConfig = """{"dock":{"size":10},"folder":{"shadow":true}}""",
         labelSingleLine = false,
+        labelEvenRows = true,
         dockInfiniteScroll = true,
         dockMatchDesktop = true,
         dockOverlay = true,
@@ -106,6 +107,7 @@ class BackupRoundTripTest {
         searchHiddenApps = true,
         searchHistory = false,
         searchPrivateKeyboard = true,
+        searchWindowHint = false,
         homeSearch = true,
         homeButtonAction = "EXPAND_NOTIFICATIONS",
         searchBarConfig = """{"desktop":{"placement":"DOCK_ABOVE","chips":["VOICE","DATE"]}}""",
@@ -376,5 +378,30 @@ class BackupRoundTripTest {
         assertEquals(null, cleared.feedCards[0].appWidgetId)
         assertEquals("a/.D", cleared.feedCards[0].widgetProvider)
         assertEquals(2, RestoredWidgets.needingRebind(cleared))
+    }
+
+    @Test
+    fun widgetsFollowTheIdsAndroidsOwnRestoreReBound() {
+        val model = LauncherModel(
+            items = listOf(
+                LauncherItem(id = "moved", itemType = ItemType.WIDGET, appWidgetId = 7, widgetProvider = "a/.B"),
+                LauncherItem(id = "notInMap", itemType = ItemType.WIDGET, appWidgetId = 8, widgetProvider = "a/.C"),
+                LauncherItem(id = "otherProvider", itemType = ItemType.WIDGET, appWidgetId = 9, widgetProvider = "a/.D")
+            ),
+            feedCards = listOf(
+                com.supernova.launcher.feed.FeedCard(id = "card", appWidgetId = 10, widgetProvider = "a/.E")
+            )
+        )
+        val map = mapOf(7 to 70, 9 to 90, 10 to 100)
+        // 90 came back bound to something else: that item keeps its dead id
+        // and its placeholder rather than showing a stranger's widget.
+        val remapped = RestoredWidgets.withRemappedIds(model, map) { id, provider ->
+            (id == 70 && provider == "a/.B") || (id == 100 && provider == "a/.E")
+        }
+        assertEquals(70, remapped.items[0].appWidgetId)
+        assertEquals(8, remapped.items[1].appWidgetId)
+        assertEquals(9, remapped.items[2].appWidgetId)
+        assertEquals(100, remapped.feedCards[0].appWidgetId)
+        assertEquals(model, RestoredWidgets.withRemappedIds(model, emptyMap()) { _, _ -> true })
     }
 }

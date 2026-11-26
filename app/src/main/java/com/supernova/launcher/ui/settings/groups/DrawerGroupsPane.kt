@@ -15,6 +15,7 @@ import com.supernova.launcher.databinding.PaneDrawerGroupsBinding
 import com.supernova.launcher.ui.GroupChecklist
 import com.supernova.launcher.ui.ItemIcons
 import com.supernova.launcher.ui.LauncherViewModel
+import com.supernova.launcher.ui.followLauncherAnimations
 
 // The Drawer groups page: the tabs and folders in two cards under a preview
 // of the tab bar, each group opening on a page of its own. It stands in for
@@ -94,6 +95,7 @@ class DrawerGroupsPane(
 
     fun refresh() {
         if (!container.isVisible || dragging) return
+        binding.groupsList.followLauncherAnimations(viewModel.state.value.prefs)
         val id = editing
         val group = id?.let { wanted -> viewModel.drawerGroups().firstOrNull { it.id == wanted } }
         val onGroup = binding.groupEdit.root.isVisible
@@ -162,21 +164,9 @@ class DrawerGroupsPane(
     }
 
     // Both cards' order stored, and a group dragged onto the other card
-    // turned into a tab or a folder there (#267), with Undo.
-    private fun dropped() {
-        val tabs = adapter.ids(DrawerGroupType.TAB)
-        val folders = adapter.ids(DrawerGroupType.FOLDER)
-        val before = viewModel.drawerGroups()
-        val defaultTab = viewModel.state.value.prefs.drawerDefaultTab
-        viewModel.arrangeGroups(tabs, folders)
-        val group = before.singleOrNull {
-            if (it.type == DrawerGroupType.TAB) it.id in folders else it.id in tabs
-        } ?: return
-        val message = if (group.type == DrawerGroupType.TAB) R.string.group_now_folder else R.string.group_now_tab
-        Snackbar.make(container, activity.getString(message, group.name), Snackbar.LENGTH_LONG)
-            .setAction(R.string.undo) { viewModel.revertGroups(before, defaultTab) }
-            .show()
-    }
+    // turned into a tab or a folder there (#267).
+    private fun dropped() =
+        viewModel.arrangeGroups(adapter.ids(DrawerGroupType.TAB), adapter.ids(DrawerGroupType.FOLDER))
 
     override fun startDrag(holder: RecyclerView.ViewHolder) = touchHelper.startDrag(holder)
 

@@ -238,7 +238,31 @@ object StylePickerSheet {
             val target = Slot.entries.first { slotButtonId(it) == checkedId }
             if (target != slot) selectSlot(target)
         }
-        binding.styleDefault.setOnClickListener { onPick(ColorSpec()) }
+        // Default puts back what the slot's page shows besides the colour:
+        // the opacity on Surface (#298), the minimum contrast on Text (#349).
+        binding.styleDefault.setOnClickListener {
+            val surfaceSlot = slot == Slot.SURFACE
+            if (slot == Slot.TEXT) style = style.copy(minContrast = null)
+            if (surfaceSlot) {
+                style = style.copy(alpha = null)
+                if (SurfaceOpacity.handles(surfaceId)) {
+                    val percent = SurfaceOpacity.defaultPercent(surfaceId)
+                    SurfaceOpacity.setPref(viewModel, surfaceId, percent)
+                    binding.opacitySeek.progress = percent
+                }
+            }
+            onPick(ColorSpec())
+            renderContrast()
+            if (surfaceSlot && binding.opacityRow.isVisible) {
+                val shown = if (SurfaceOpacity.handles(surfaceId)) {
+                    binding.opacitySeek.progress
+                } else {
+                    (resolvedNow().surface ushr ALPHA_SHIFT) * FULL_OPACITY / ALPHA_MAX
+                }
+                binding.opacitySeek.progress = shown
+                binding.opacityValue.text = context.getString(R.string.opacity_percent, shown)
+            }
+        }
 
         fun applyOpacity(percent: Int) {
             if (SurfaceOpacity.handles(surfaceId)) {
@@ -279,7 +303,7 @@ object StylePickerSheet {
             } else {
                 (Styles.resolve(context, prefs).of(surfaceId).surface ushr 24) * 100 / 255
             }
-            binding.opacitySeek.min = SurfaceOpacity.min(surfaceId)
+            binding.opacitySeek.min = 0
             binding.opacitySeek.progress = initial
             binding.opacityValue.text = context.getString(R.string.opacity_percent, initial)
             binding.opacitySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -301,6 +325,11 @@ object StylePickerSheet {
             listOf(
                 binding.slotGroup, binding.stripText, binding.stripAccent, binding.contrastRow
             ).forEach { it.visibility = android.view.View.GONE }
+        }
+        if (surfaceId == SurfaceId.DOCK) {
+            // The dock's Text colours its labels on a plate; nothing on it
+            // takes an accent.
+            listOf(binding.slotAccent, binding.stripAccent).forEach { it.visibility = android.view.View.GONE }
         }
         if (surfaceId in BAR_SURFACES) {
             if (barGlassOn(surfaceId, prefs)) {
@@ -419,5 +448,7 @@ object StylePickerSheet {
     private const val CUSTOM_SAVE_DELAY_MS = 300L
     private const val CONTRAST_STEP = 5
     private const val FULL_OPACITY = 100
+    private const val ALPHA_SHIFT = 24
+    private const val ALPHA_MAX = 255
     private const val DRAWER_FIELD_OPACITY = 14
 }

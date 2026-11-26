@@ -42,7 +42,6 @@ import com.supernova.launcher.data.PrefSpec
 import com.supernova.launcher.data.PrivateSpace
 import com.supernova.launcher.data.TabFolders
 import com.supernova.launcher.data.WorkspaceGeometry
-import com.supernova.launcher.data.isLargeIcon
 import com.supernova.launcher.data.imports.BackupFiles
 import com.supernova.launcher.data.imports.LayoutConverter
 import com.supernova.launcher.data.imports.PickedBackup
@@ -142,8 +141,9 @@ class LauncherViewModel(
 
     // A setting's write: off the main thread, fire and forget. Every plain
     // setter below is one of these.
+    // A write that fails (a full disk) is noted, not a crash on every tap.
     private fun persist(block: suspend () -> Unit) {
-        viewModelScope.launch { block() }
+        viewModelScope.launch { com.supernova.launcher.runLogged("save to the settings store") { block() } }
     }
 
     // Any one setting: viewModel.set(Pref.gridRows, 7). The settings that
@@ -169,11 +169,14 @@ class LauncherViewModel(
     private var appliedIconShape: IconShape? = null
     private var appliedIconShapeCustom: String? = null
     private var appliedReshape: com.supernova.launcher.data.ReshapeLegacy? = null
+    private var appliedSizeNormalize: Boolean? = null
     private var appliedShadow: Boolean? = null
     private var appliedGlass: com.supernova.launcher.data.IconGlass? = null
     // Themed-icon colors depend on the whole palette, so track a signature.
     private var appliedThemedSig: String? = null
+    private var appliedNight: Boolean? = null
     private var autoBackupWritten = false
+    private var shortcutsRepinned = false
 
     // Whether each of the two icon-configuration collectors has applied its
     // first emission. The startup scan waits for both: a warm that runs
@@ -206,11 +209,7 @@ class LauncherViewModel(
             }
         }
         viewModelScope.launch {
-            // A large icon draws at twice the desktop size, so the icons
-            // render for it while there is one.
-            val largeIcons = repository.modelFlow.map { model -> model.items.any { it.isLargeIcon } }
-                .distinctUntilChanged()
-            preferences.flow.combine(largeIcons) { prefs, large -> prefs to large }.collect { (prefs, large) ->
+            preferences.flow.collect { prefs ->
                 WorkspaceGeometry.allowWidgetOverlap = prefs.widgetOverlap
                 WorkspaceGeometry.allowPlacementOverlap = prefs.overlapWhenPlacing
                 val packChanged = prefs.iconPack != appliedIconPack
@@ -218,26 +217,38 @@ class LauncherViewModel(
                     prefs.iconShapeCustom != appliedIconShapeCustom
                 val reshape = com.supernova.launcher.data.ReshapeLegacy.fromPrefs(prefs)
                 val normalizeChanged = reshape != appliedReshape
+                val sizeNormalizeChanged = prefs.iconNormalization != appliedSizeNormalize
                 val shadowChanged = prefs.iconShadow != appliedShadow
                 val glassChanged = prefs.iconGlass != appliedGlass
                 val themedSig = themedIconSignature(prefs)
                 val themedChanged = themedSig != appliedThemedSig
-                val resolution = iconResolution(prefs, large)
+                val resolution = iconResolution(prefs)
                 val resolutionChanged = resolution != appliedResolution
+                val largeResolution = largeIconResolution(prefs, resolution)
+                val largeResolutionChanged = largeResolution != appliedLargeResolution
+                val night = isNightMode(prefs)
+                val nightChanged = night != appliedNight
                 val changes = listOf(
-                    packChanged, shapeChanged, normalizeChanged, shadowChanged,
-                    glassChanged, themedChanged, resolutionChanged
+                    packChanged, shapeChanged, normalizeChanged, sizeNormalizeChanged, shadowChanged,
+                    glassChanged, themedChanged, resolutionChanged, largeResolutionChanged, nightChanged
                 )
                 if (changes.none { it }) return@collect
                 appliedResolution = resolution
+                appliedLargeResolution = largeResolution
                 appliedIconPack = prefs.iconPack
                 appliedIconShape = prefs.iconShape
                 appliedIconShapeCustom = prefs.iconShapeCustom
                 appliedReshape = reshape
+                appliedSizeNormalize = prefs.iconNormalization
                 appliedShadow = prefs.iconShadow
                 appliedGlass = prefs.iconGlass
                 appliedThemedSig = themedSig
-                withContext(Dispatchers.Default) {
+                appliedNight = night
+                // A themed-color change that dropped no icon (Themed icons
+                // off) has nothing to redraw.
+                val redraw = withContext(Dispatchers.Default) {
+                    // Before the pack: a pack loads in the mode it is set to.
+                    val nightEvicted = nightChanged && catalog.applyNight(night)
                     if (packChanged) catalog.applyIconPack(prefs.iconPack)
                     if (shapeChanged) {
                         catalog.applyIconShape(
@@ -245,16 +256,22 @@ class LauncherViewModel(
                             CustomShapeSpec.decode(prefs.iconShapeCustom)
                         )
                     }
-                    if (normalizeChanged) catalog.applyReshapeLegacy(reshape)
+                    if (normalizeChanged || sizeNormalizeChanged) {
+                        catalog.applyReshapeLegacy(reshape, prefs.iconNormalization)
+                    }
                     if (shadowChanged) catalog.applyIconShadow(prefs.iconShadow)
                     if (glassChanged) {
                         catalog.applyIconGlass(prefs.iconGlass)
                     }
                     if (resolutionChanged) catalog.applyIconResolution(resolution)
-                    if (themedChanged) {
+                    if (largeResolutionChanged) catalog.applyLargeIconResolution(largeResolution)
+                    val themedEvicted = themedChanged && run {
                         val (bg, fg) = themedIconColors(prefs)
                         catalog.applyThemedIcons(prefs.themedIcons, bg, fg, prefs.themedIconsAutogen)
                     }
+                    themedEvicted || nightEvicted || packChanged || shapeChanged || normalizeChanged ||
+                        sizeNormalizeChanged || shadowChanged ||
+                        glassChanged || resolutionChanged || largeResolutionChanged
                 }
                 // The first emission is the startup configuration: it applies
                 // it and stops there, leaving the enumeration, the warm and
@@ -264,7 +281,11 @@ class LauncherViewModel(
                 val firstConfig = !prefsApplied
                 prefsApplied = true
                 signalConfigAppliedIfReady()
-                if (!firstConfig) {
+                if (!firstConfig && redraw) {
+                    // What the home screen shows draws before it rebinds, so
+                    // it changes at once rather than icon by icon; the rest
+                    // follows in the refresh's warm (#288).
+                    withContext(Dispatchers.Default) { warmHomeFirst() }
                     requestRefresh(immediate = true)
                     iconGeneration.value += 1
                 }
@@ -315,6 +336,7 @@ class LauncherViewModel(
             // install's auto-add and smart-folder placement both run their
             // own fresh lookups rather than waiting on appsFlow.
             requestRefresh(immediate = false)
+            SearchMarks.forget()
             when (change) {
                 is AppChange.Removed -> {
                     viewModelScope.launch(Dispatchers.Default) { catalog.invalidatePackages(listOf(change.packageName)) }
@@ -396,6 +418,25 @@ class LauncherViewModel(
         }
     }
 
+    // The home screen's front icons, drawn ahead of a redraw's rebind.
+    private suspend fun warmHomeFirst() {
+        catalog.warmIcons(firstFrameApps(repository.modelFlow.first()))
+    }
+
+    // Every app the home screen shows, on any page, in the dock or in their
+    // folders, the front ones first: a redraw warms them before the drawer.
+    private fun homeApps(model: com.supernova.launcher.data.LauncherModel): List<LaunchableApp> {
+        val rest = model.items.filter {
+            it.itemType == ItemType.APP &&
+                (it.container == ContainerType.WORKSPACE || it.container == ContainerType.FOLDER)
+        }.mapNotNull { item ->
+            val pkg = item.packageName ?: return@mapNotNull null
+            val cls = item.className ?: return@mapNotNull null
+            LaunchableApp(pkg, cls, item.label, item.userSerial)
+        }
+        return (firstFrameApps(model) + rest).distinctBy { "${it.userSerial}/${it.packageName}/${it.className}" }
+    }
+
     // The single enumeration the first frame waits for. What the first frame
     // shows is warmed BEFORE the workspace is allowed to bind, so those binds
     // are cache hits; the rest of the drawer warms behind the drawn frame.
@@ -407,15 +448,23 @@ class LauncherViewModel(
         catalog.warmIcons(firstFrameApps(repository.modelFlow.first()))
         iconGeneration.compareAndSet(0, 1)
 
+        // The list as the last run left it, so a drawer opened now has its
+        // apps while they are listed afresh: with a few hundred apps that
+        // takes seconds, and the drawer was empty until it was done.
+        if (appsFlow.value.isEmpty()) appsFlow.value = appListCache.load()
+
         // Behind the drawn frame: the list the drawer needs, and every other
         // icon. The first-frame icons are cache hits here.
         val apps = catalog.listLaunchableApps()
         privateSpaceFlow.value = catalog.privateSpace()
         pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        appListCache.save(apps)
         pruneUninstalled(apps)
         catalog.warmIcons(apps)
     }
+
+    private val appListCache by lazy { com.supernova.launcher.data.AppListCache(getApplication()) }
 
     // Catching up on uninstalls the launcher missed (its process was gone
     // when the app went): an item whose app is no longer installed goes, as
@@ -526,10 +575,12 @@ class LauncherViewModel(
         privateSpaceFlow.value = catalog.privateSpace()
         pausedWorkFlow.value = catalog.pausedWorkProfiles()
         appsFlow.value = apps
+        appListCache.save(apps)
         pruneUninstalled(apps)
         // Pre-warm off the main thread so binds become cache hits; the
-        // render lock keeps this safe alongside main-thread misses.
-        catalog.warmIcons(apps)
+        // render lock keeps this safe alongside main-thread misses. The home
+        // screen's icons first, after a redraw (#288); all hits otherwise.
+        catalog.warmIcons(homeApps(repository.modelFlow.first()) + apps)
         if (stale) iconGeneration.value += 1
     }
 
@@ -545,19 +596,29 @@ class LauncherViewModel(
     }
 
     private var appliedResolution = 0f
+    private var appliedLargeResolution = 0f
 
     // The largest icon size any surface draws at, rounded up to a fifth so a
     // size slider's drag re-renders at a few steps rather than every tick.
-    private fun iconResolution(prefs: com.supernova.launcher.data.LauncherPrefs, largeIcons: Boolean): Float {
+    // A Large icon's copy is rendered on its own (largeIconResolution); one
+    // on the home screen used to raise every icon to it, so the cache held a
+    // fifth as many.
+    private fun iconResolution(prefs: com.supernova.launcher.data.LauncherPrefs): Float {
         val scales = listOf(
-            if (largeIcons) prefs.iconScale * LARGE_ICON_RESOLUTION else prefs.iconScale,
+            prefs.iconScale,
             if (prefs.dockMatchDesktop) prefs.iconScale else prefs.dockIconScale,
             if (prefs.drawerMatchDesktop) prefs.iconScale else prefs.drawerIconScale,
             if (prefs.folderMatchDesktop) prefs.iconScale else prefs.folderIconScale
         )
-        val cap = if (largeIcons) LARGE_ICON_RESOLUTION else MAX_ICON_RESOLUTION
-        val largest = scales.maxOrNull()?.coerceIn(1f, cap) ?: 1f
+        val largest = scales.maxOrNull()?.coerceIn(1f, MAX_ICON_RESOLUTION) ?: 1f
         return kotlin.math.ceil(largest * 5f - 0.001f) / 5f
+    }
+
+    // A Large icon fills its 2x2 block, about two and a half times the
+    // desktop size, rounded up to a fifth as iconResolution is.
+    private fun largeIconResolution(prefs: com.supernova.launcher.data.LauncherPrefs, normal: Float): Float {
+        val large = (prefs.iconScale * LARGE_ICON_RESOLUTION).coerceIn(1f, LARGE_ICON_RESOLUTION)
+        return maxOf(normal, kotlin.math.ceil(large * 5f - 0.001f) / 5f)
     }
 
     // Called as the launcher's activity is created: a Display size change
@@ -595,11 +656,23 @@ class LauncherViewModel(
             val signature = themedIconSignature(prefs)
             if (signature == appliedThemedSig) return@launch
             appliedThemedSig = signature
-            withContext(Dispatchers.Default) {
+            // A day/night icon pack swaps halves too (#288).
+            val night = isNightMode(prefs)
+            val nightChanged = night != appliedNight
+            appliedNight = night
+            val evicted = withContext(Dispatchers.Default) {
+                val packEvicted = nightChanged && catalog.applyNight(night)
                 val (bg, fg) = themedIconColors(prefs)
-                catalog.applyThemedIcons(prefs.themedIcons, bg, fg, prefs.themedIconsAutogen)
+                (catalog.applyThemedIcons(prefs.themedIcons, bg, fg, prefs.themedIconsAutogen) || packEvicted)
+                    .also { if (it) warmHomeFirst() }
             }
+            if (!evicted) return@launch
             iconGeneration.value += 1
+            // Nothing else warms after a theme flip: the drawer drew its
+            // icons one by one as it was opened.
+            withContext(Dispatchers.Default) {
+                catalog.warmIcons(homeApps(repository.modelFlow.first()) + appsFlow.value)
+            }
         }
     }
 
@@ -854,6 +927,21 @@ class LauncherViewModel(
             listOfNotNull(searchBarWidget.takeIf { it != 0 })).toSet()
     }
 
+    // The widgets Android's own restore re-bound under fresh ids: the layout
+    // and the search bar's replaced widget follow the map, and come up live
+    // with the settings their apps kept. False while the layout can't be
+    // read - the map then waits for a later start instead of being dropped.
+    suspend fun adoptRestoredWidgetIds(oldToNew: Map<Int, Int>): Boolean {
+        val bound = widgetBoundCheck()
+        if (!repository.adoptRestoredWidgetIds(oldToNew, bound)) return false
+        val prefs = preferences.snapshot()
+        val moved = oldToNew[prefs.searchBarWidgetId]
+        if (moved != null && bound(moved, prefs.searchBarWidgetProvider)) {
+            preferences.setSearchBarWidget(moved, prefs.searchBarWidgetProvider)
+        }
+        return true
+    }
+
     fun setWidgetId(itemId: String, appWidgetId: Int) = persist { repository.setWidgetId(itemId, appWidgetId) }
 
     fun resizeWidget(
@@ -934,6 +1022,16 @@ class LauncherViewModel(
         }
     }
 
+    // Undo of an app's removal from a two-app folder, which dissolved it:
+    // the app left behind gives way, and the folder comes back whole.
+    fun restoreFolder(items: List<LauncherItem>) {
+        val prefs = state.value.prefs
+        viewModelScope.launch {
+            val dockSlots = prefs.dockCount * prefs.dockPages.coerceAtLeast(1)
+            repository.replaceItems(items, prefs.gridCols, prefs.gridRows, dockSlots)
+        }
+    }
+
     // A home or dock folder moved into the drawer (FolderToDrawer). Null,
     // and nothing moved, when the folder holds no app a drawer group can.
     fun moveFolderToDrawer(folder: LauncherItem, target: DrawerTarget): FolderMove? {
@@ -1006,8 +1104,14 @@ class LauncherViewModel(
     fun visibleApps(): List<LaunchableApp> {
         val current = state.value
         val hidden = current.prefs.hiddenApps
+        // Launch counts only order the usage sorts: keyed on them always,
+        // every app launch re-sorted the whole list at the next open.
+        val sort = current.prefs.drawerSort
+        val byUsage = sort == com.supernova.launcher.ui.DrawerSort.MOST_USED ||
+            sort == com.supernova.launcher.ui.DrawerSort.RECENTLY_USED
         val inputs = listOf(
-            current.apps, hidden, current.model.appOverrides, current.prefs.drawerSort, launchCounts, recentLaunches,
+            current.apps, hidden, current.model.appOverrides, sort,
+            launchCounts.takeIf { byUsage }, recentLaunches.takeIf { byUsage },
             java.util.Locale.getDefault()
         )
         visibleAppsMemo?.takeIf { it.matches(inputs) }?.let { return it.value.first }
@@ -1198,10 +1302,13 @@ class LauncherViewModel(
 
     // Every key a TAB-type group takes out of the All/Personal list: its
     // apps', and its drawer folders' (TabFolders).
-    fun isolatedTabKeys(): Set<String> =
-        drawerGroups()
+    // None while the tab bar is hidden: those tabs can't be opened (#327).
+    fun isolatedTabKeys(): Set<String> {
+        if (!drawerTabBarShown()) return emptySet()
+        return drawerGroups()
             .filter { it.type == DrawerGroupType.TAB && leavesMainList(it) }
             .flatMapTo(mutableSetOf()) { it.members }
+    }
 
     // The drawer folders a list shows: a tab's own, or for the main list
     // (null) every folder no tab took out of it.
@@ -1330,17 +1437,6 @@ class LauncherViewModel(
         if (state.value.prefs.drawerDefaultTab in folders) set(Pref.drawerDefaultTab, "")
     }
 
-    // Undo of that drag: the groups as before held them, and the default
-    // tab back if the drag cleared it.
-    fun revertGroups(before: List<DrawerGroup>, defaultTab: String) {
-        viewModelScope.launch {
-            preferences.updateDrawerGroups { DrawerGroupOrder.reverted(it, before) }
-        }
-        if (defaultTab.isNotEmpty() && state.value.prefs.drawerDefaultTab.isEmpty()) {
-            set(Pref.drawerDefaultTab, defaultTab)
-        }
-    }
-
     // Undo of a delete on the Drawer groups page: the group back out of
     // before, the list as it stood when it was deleted.
     fun restoreGroup(before: List<DrawerGroup>, id: String) {
@@ -1375,7 +1471,14 @@ class LauncherViewModel(
         is GroupPick.Folder -> TabFolders.keyOf(pick.group.id)
     }
 
-    fun workTabActive(): Boolean = state.value.prefs.drawerWorkTab && hasWorkApps()
+    // With the tab bar hidden there is no Work tab to hold the work apps:
+    // they stay on the drawer's one list (#327).
+    fun workTabActive(): Boolean =
+        state.value.prefs.drawerWorkTab && hasWorkApps() && drawerTabBarShown()
+
+    // Hidden, the bar leaves the drawer one list of every app: no tab, the
+    // Work tab included, can take apps out of it where nobody can reach them.
+    fun drawerTabBarShown(): Boolean = state.value.prefs.drawerTabBar != DrawerTabBar.NONE
 
     // A drawer folder's apps as the All list shows them: with the Work tab
     // on, a work app stays in that tab, out of the personal folders.
@@ -1485,6 +1588,8 @@ class LauncherViewModel(
 
     fun addPage() = persist { repository.addPage() }
 
+    fun addPageFirst() = persist { repository.addPageFirst() }
+
     fun removePage(page: Int, onRemoved: (() -> Unit)? = null) {
         viewModelScope.launch { if (repository.removePage(page)) onRemoved?.invoke() }
     }
@@ -1581,6 +1686,18 @@ class LauncherViewModel(
         viewModelScope.launch {
             val prefs = state.value.prefs
             withContext(Dispatchers.Default) { repository.writeAutoBackup(prefs) }
+        }
+    }
+
+    // Once per session, with the real layout loaded: the home screen's app
+    // shortcuts pinned again where a pin went missing - a layout restored
+    // before this launcher held the home role couldn't pin them then.
+    fun repinShortcutsOnce() {
+        if (shortcutsRepinned) return
+        shortcutsRepinned = true
+        val items = state.value.model.items
+        viewModelScope.launch(Dispatchers.IO) {
+            com.supernova.launcher.data.ShortcutPins.repin(getApplication(), items)
         }
     }
 

@@ -1,6 +1,8 @@
 package com.supernova.launcher.notification
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
@@ -58,13 +60,15 @@ class SupernovaNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         connected = true
-        refresh()
+        handler.removeCallbacks(refreshRunnable)
+        handler.post(refreshRunnable)
     }
 
     override fun onListenerDisconnected() {
         connected = false
         handler.removeCallbacks(refreshRunnable)
         state.value = BadgeState()
+        seen = emptyList()
         previews = emptyMap()
         super.onListenerDisconnected()
     }
@@ -81,8 +85,10 @@ class SupernovaNotificationListener : NotificationListenerService() {
 
     // Each refresh reads every active notification back over binder, so a
     // burst of posts (a group and its children, a sync) is read once, a
-    // moment after it settles, instead of once per notification.
-    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    // moment after it settles, instead of once per notification. On a thread
+    // of its own: on the main thread a stream of updates (a download, a
+    // timer) took its time from the launcher's frames and touches.
+    private val handler = android.os.Handler(refreshThread.looper)
     private val refreshRunnable = Runnable { refresh() }
 
     private fun scheduleRefresh() {
@@ -97,6 +103,19 @@ class SupernovaNotificationListener : NotificationListenerService() {
         val candidates = active.map { candidateOf(it, ranking, scratch) }
         val counted = BadgeCounting.badged(candidates).toHashSet()
         val badged = active.filterIndexed { index, _ -> candidates[index] in counted }
+        seen = active.mapIndexed { index, sbn ->
+            val ranked = ranking?.getRanking(sbn.key, scratch) == true
+            BadgeReport.Seen(
+                packageName = sbn.packageName,
+                userId = sbn.user.hashCode(),
+                candidate = candidates[index],
+                counted = candidates[index] in counted,
+                ranked = ranked,
+                dndHidesBadge = ranked &&
+                    (scratch.suppressedVisualEffects and NotificationManager.Policy.SUPPRESSED_EFFECT_BADGE) != 0
+            )
+        }
+        refreshedAt = android.os.SystemClock.elapsedRealtime()
         // Counts and faces land together, so one redraw sees both.
         state.value = BadgeState(
             counts = BadgeCounting.counts(candidates),
@@ -133,8 +152,8 @@ class SupernovaNotificationListener : NotificationListenerService() {
             number = notification.number,
             isGroupSummary = (notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0,
             canShowBadge = canShowBadge,
-            clearable = sbn.isClearable,
             ongoing = sbn.isOngoing,
+            defaultChannel = notification.channelId == NotificationChannel.DEFAULT_CHANNEL_ID,
             hasContent = !extras.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() ||
                 !extras.getCharSequence(Notification.EXTRA_TEXT).isNullOrBlank(),
             groupKey = sbn.groupKey.orEmpty()
@@ -180,6 +199,45 @@ class SupernovaNotificationListener : NotificationListenerService() {
 
         @Volatile
         private var connected = false
+
+        // What the latest refresh read, for the badge report (#344).
+        @Volatile
+        private var seen: List<BadgeReport.Seen> = emptyList()
+
+        @Volatile
+        private var refreshedAt = 0L
+
+        @Volatile
+        private var rebindAsked = false
+
+        // Access granted but no connection: some systems drop the binding
+        // after an update or a kill and never bring it back on their own.
+        // Asked once a process, on a launcher start.
+        fun rebindIfDropped(context: Context) {
+            if (connected || rebindAsked || !isEnabled(context)) return
+            rebindAsked = true
+            com.supernova.launcher.runLogged("rebind notification listener") {
+                requestRebind(ComponentName(context, SupernovaNotificationListener::class.java))
+            }
+            com.supernova.launcher.Diagnostics.note(
+                "badges: listener not connected",
+                "access on, no connection at launcher start; rebind asked"
+            )
+        }
+
+        // Why each app's notifications badge or not, for the crash log.
+        fun report(context: Context): String = BadgeReport.format(
+            enabled = isEnabled(context),
+            connected = connected,
+            systemBadging = Settings.Secure.getInt(context.contentResolver, "notification_badging", -1),
+            refreshedAgoMs = if (refreshedAt == 0L) -1 else android.os.SystemClock.elapsedRealtime() - refreshedAt,
+            seen = seen
+        )
+
+        // One for the process: the system may rebind the service.
+        private val refreshThread by lazy {
+            android.os.HandlerThread("notification-badges").apply { start() }
+        }
 
         private val state = MutableStateFlow(BadgeState())
         val badgeState: StateFlow<BadgeState> = state

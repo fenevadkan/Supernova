@@ -17,6 +17,7 @@ import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.widget.ImageViewCompat
 import com.supernova.launcher.R
 import com.supernova.launcher.SettingsActivity
+import com.supernova.launcher.data.LauncherPrefs
 import com.supernova.launcher.runLogged
 
 // The buttons at a search bar's right end. The home bar and the drawer field
@@ -47,7 +48,8 @@ object SearchBarButtons {
         SearchBarChip.VOICE -> R.string.search_bar_chip_voice
         SearchBarChip.ASSISTANT -> R.string.search_bar_chip_assistant
         SearchBarChip.DATE -> R.string.search_bar_chip_date
-        SearchBarChip.PLAY_STORE -> R.string.chip_play_store
+        // Any store the phone has, not the Play Store alone (AppStores, #357).
+        SearchBarChip.PLAY_STORE -> R.string.search_bar_chip_store
         SearchBarChip.SETTINGS -> R.string.settings
     }
 
@@ -110,8 +112,10 @@ object SearchBarButtons {
         DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH or DateUtils.FORMAT_NO_YEAR
     )
 
-    // What a tap does. Each is blind-started: a missing handler just no-ops.
-    fun run(context: Context, chip: SearchBarChip) {
+    // What a tap on [anchor] does. Each is blind-started: a missing handler
+    // just no-ops. With [prefs] the store button can offer a menu of stores.
+    fun run(anchor: View, chip: SearchBarChip, prefs: LauncherPrefs?) {
+        val context = anchor.context
         when (chip) {
             SearchBarChip.VOICE -> VoiceSearch.start(context)
             // Same ladder as the ASSISTANT gesture action, with the
@@ -129,10 +133,7 @@ object SearchBarButtons {
                     .build()
                 runLogged("open link") { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
             }
-            SearchBarChip.PLAY_STORE -> runLogged("open Play Store") {
-                context.packageManager.getLaunchIntentForPackage("com.android.vending")
-                    ?.let(context::startActivity)
-            }
+            SearchBarChip.PLAY_STORE -> AppStores.open(anchor, prefs)
             SearchBarChip.SETTINGS -> context.startActivity(Intent(context, SettingsActivity::class.java))
         }
     }

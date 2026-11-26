@@ -20,7 +20,8 @@ object SurfaceOpacity {
     fun effective(prefs: LauncherPrefs, id: SurfaceId): Int =
         ((StyleConfig.decode(prefs.styleConfig).styleFor(id).alpha ?: pref(prefs, id)) * PERCENT).roundToInt()
 
-    fun min(id: SurfaceId): Int = if (id == SurfaceId.DRAWER) DRAWER_MIN_PERCENT else 0
+    // The page's slider before anything was set: Default in the sheet.
+    fun defaultPercent(id: SurfaceId): Int = (pref(LauncherPrefs(), id) * PERCENT).roundToInt()
 
     // From the page's slider.
     fun set(viewModel: LauncherViewModel, id: SurfaceId, percent: Int) {
@@ -33,7 +34,7 @@ object SurfaceOpacity {
 
     // The sheet clears style.alpha itself, in the config it is editing.
     fun setPref(viewModel: LauncherViewModel, id: SurfaceId, percent: Int) {
-        val value = percent.coerceAtLeast(min(id)) / PERCENT
+        val value = percent / PERCENT
         when (id) {
             SurfaceId.DOCK -> viewModel.set(Pref.dockBgOpacity, value)
             SurfaceId.DRAWER -> viewModel.set(Pref.drawerBgOpacity, value)
@@ -62,7 +63,4 @@ object SurfaceOpacity {
     }
 
     private const val PERCENT = 100f
-
-    // Pref.drawerBgOpacity's floor.
-    private const val DRAWER_MIN_PERCENT = 20
 }

@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
@@ -431,16 +433,7 @@ class LauncherRepository(private val context: Context) {
     }
 
     suspend fun removeItem(itemId: String) {
-        mutate { current ->
-            val removedItem = current.items.firstOrNull { it.id == itemId }
-            val removeIds = mutableSetOf(itemId)
-            if (removedItem?.itemType == ItemType.FOLDER) {
-                current.items.filter { it.folderId == itemId }.forEach { removeIds.add(it.id) }
-            }
-            current.copy(
-                items = current.items.filterNot { it.id in removeIds }
-            )
-        }
+        mutate { current -> ItemRemoval.removed(current, itemId) }
     }
 
     // Undo for a removal: re-adds the captured items verbatim. The first
@@ -460,10 +453,7 @@ class LauncherRepository(private val context: Context) {
     // Undo of that move: what stayed behind (a shortcut that took the
     // folder's place) gives way, and the folder comes back as it was.
     suspend fun replaceItems(items: List<LauncherItem>, cols: Int, rows: Int, dockSlots: Int) {
-        val ids = items.mapTo(mutableSetOf()) { it.id }
-        mutateFitted(cols, rows) { current ->
-            restored(current.copy(items = current.items.filterNot { it.id in ids }), items, cols, rows, dockSlots)
-        }
+        mutateFitted(cols, rows) { current -> ItemRemoval.replaced(current, items, cols, rows, dockSlots) }
     }
 
     suspend fun addWidget(
@@ -607,6 +597,25 @@ class LauncherRepository(private val context: Context) {
                 (current.items.filter { it.container == ContainerType.WORKSPACE }.maxOfOrNull { it.page } ?: -1) + 1
             )
             current.copy(pageCount = (shown + 1).coerceAtMost(MAX_PAGES))
+        }
+    }
+
+    // A new empty page before the first (#376): every page and the home page
+    // move one along. Nothing at the page limit.
+    suspend fun addPageFirst() {
+        mutate { current ->
+            val shown = maxOf(
+                current.pageCount,
+                (current.items.filter { it.container == ContainerType.WORKSPACE }.maxOfOrNull { it.page } ?: -1) + 1
+            )
+            if (shown >= MAX_PAGES) return@mutate current
+            current.copy(
+                pageCount = shown + 1,
+                defaultPage = current.defaultPage + 1,
+                items = current.items.map {
+                    if (it.container == ContainerType.WORKSPACE) it.copy(page = it.page + 1) else it
+                }
+            )
         }
     }
 
@@ -808,6 +817,19 @@ class LauncherRepository(private val context: Context) {
         }
     }
 
+    // The layout follows the ids Android's own restore re-bound (see
+    // WidgetHostRestore): the widgets it describes are already live and still
+    // hold their settings. False while the layout can't be read, so the map
+    // is kept for a later start rather than dropped.
+    suspend fun adoptRestoredWidgetIds(
+        oldToNew: Map<Int, Int>,
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+    ): Boolean {
+        if (!modelReadable()) return false
+        mutate { current -> RestoredWidgets.withRemappedIds(current, oldToNew, widgetBound) }
+        return true
+    }
+
     // Sets a bound widget as a card's featured content. The old host id (if
     // any) is freed by the caller before this runs.
     // A widget restored without a live id has one again.
@@ -906,12 +928,15 @@ class LauncherRepository(private val context: Context) {
         isInstalled: (packageName: String, userSerial: Long) -> Boolean,
         // Whether this id is still bound here, to this provider: a backup of
         // this same install, with its widget still up.
-        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean,
+        // Off when there is nothing to keep (an unreadable store, emptied):
+        // its empty snapshot would push a real backup out.
+        snapshotFirst: Boolean = true
     ): ImportResult {
         val payload = runCatching { json.decodeFromString<BackupPayload>(raw) }.getOrElse {
             throw com.supernova.launcher.data.imports.UnreadableBackupException("not a launcher backup")
         }
-        return restore(withRetiredFolderSort(raw, payload), currentPrefs, isInstalled, widgetBound)
+        return restore(withRetiredFolderSort(raw, payload), currentPrefs, isInstalled, widgetBound, snapshotFirst)
     }
 
     // A backup from before the folder A-Z setting was retired, taken with it
@@ -955,7 +980,8 @@ class LauncherRepository(private val context: Context) {
         payload: BackupPayload,
         currentPrefs: LauncherPrefs,
         isInstalled: (packageName: String, userSerial: Long) -> Boolean,
-        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean
+        widgetBound: (appWidgetId: Int, provider: String?) -> Boolean,
+        snapshotFirst: Boolean = true
     ): ImportResult {
         val migrated = ModelMigrations.migrate(payload.model)
 
@@ -983,7 +1009,9 @@ class LauncherRepository(private val context: Context) {
         // What is being replaced stays recoverable from Automatic backups, as
         // Reset's does: without that snapshot, no import. Written under the
         // lock, so no layout edit lands in between and is lost.
-        check(writeAutoBackup(currentPrefs)) { "couldn't save a backup of the current layout first" }
+        if (snapshotFirst) {
+            check(writeAutoBackup(currentPrefs)) { "couldn't save a backup of the current layout first" }
+        }
         lock.withLock {
             context.supernovaStore.edit { prefs ->
                 prefs[StoreKeys.model] = json.encodeToString(validated)
@@ -991,6 +1019,8 @@ class LauncherRepository(private val context: Context) {
                 prefs.remove(StoreKeys.retiredFolderSortAz)
             }
         }
+        // A backup from another install comes without its shortcut pins.
+        ShortcutPins.repin(context, validated.items)
 
         return ImportResult(
             restored = validated.items.size,
@@ -1184,15 +1214,20 @@ class LauncherRepository(private val context: Context) {
         return current.copy(items = result)
     }
 
+    // Off the main thread: callers launch on the view model's (main) scope,
+    // and DataStore runs the edit in the caller's context, so every drop,
+    // resize and edit encoded the whole layout there.
     private suspend fun mutate(block: (LauncherModel) -> LauncherModel) {
-        lock.withLock {
-            // Never over a layout this build couldn't read: an edit to the
-            // empty stand-in would replace it for good.
-            val current = decode(context.supernovaStore.data.first()[StoreKeys.model]) ?: return
-            val next = AppItemEdits.stampNew(current, LargeIcons.withSmallIconsOffDesktop(block(current)))
-            if (next == current) return
-            context.supernovaStore.edit { prefs ->
-                prefs[StoreKeys.model] = json.encodeToString(next)
+        withContext(Dispatchers.Default) {
+            lock.withLock {
+                // Never over a layout this build couldn't read: an edit to the
+                // empty stand-in would replace it for good.
+                val current = decode(context.supernovaStore.data.first()[StoreKeys.model]) ?: return@withLock
+                val next = AppItemEdits.stampNew(current, LargeIcons.withSmallIconsOffDesktop(block(current)))
+                if (next == current) return@withLock
+                context.supernovaStore.edit { prefs ->
+                    prefs[StoreKeys.model] = json.encodeToString(next)
+                }
             }
         }
     }

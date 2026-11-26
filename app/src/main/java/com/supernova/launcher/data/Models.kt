@@ -323,6 +323,10 @@ data class LauncherPrefs(
     // ON additionally bakes a plate behind raw legacy icons
     // ("Reshape legacy icons"), on out of the box.
     val reshapeLegacy: String = "ON",
+    // Normalize icon size (#332): with Reshape legacy Off, legacy icons and
+    // a pack's art shrink to the Material icon guidelines. On out of the
+    // box, as in the reference.
+    val iconNormalization: Boolean = true,
     // On by default. The shadow falls outside the icon, which keeps
     // its size (ShadowedIconDrawable).
     val iconShadow: Boolean = true,
@@ -348,6 +352,8 @@ data class LauncherPrefs(
     val badgeCornerRadius: Int = BadgeLimits.CORNER_ROUND,
     // A thin dark ring around every badge (Outline).
     val badgeOutline: Boolean = true,
+    // The badge centred near the icon's corner, half outside it (#250).
+    val badgeOnCorner: Boolean = false,
     val folderPreviewStyle: FolderPreviewStyle = FolderPreviewStyle.GRID,
     // Draw the first member large in the preview, remaining members small.
     val folderPrioritizeFirst: Boolean = false,
@@ -409,6 +415,14 @@ data class LauncherPrefs(
     // broken word ("OpenWeathe" over "r"). Per-surface overrides in
     // labelConfig can still allow two lines.
     val labelSingleLine: Boolean = true,
+    // With two-line labels, drawer and folder rows keep room for a second
+    // line even when none of their labels wraps, so every row of icons is
+    // spaced the same (#347). Off by default. labelEvenRows is v0.2.9's one
+    // switch for both, read as both until either page's switch is used
+    // (LabelStyler.evenRowsWrites).
+    val labelEvenRows: Boolean = false,
+    val drawerEvenRows: Boolean = false,
+    val folderEvenRows: Boolean = false,
     val dockInfiniteScroll: Boolean = false,
     // When on, the dock follows iconScale and the dock scale slider hides.
     // On by default.
@@ -447,6 +461,9 @@ data class LauncherPrefs(
     // Sets IME_FLAG_NO_PERSONALIZED_LEARNING on the search field. On by
     // default.
     val searchPrivateKeyboard: Boolean = true,
+    // The "Search" text in the search window's empty field (#324), as the
+    // drawer field's own switch. On by default.
+    val searchWindowHint: Boolean = true,
     // Long-pressing a recent search offers to keep it as a home-screen
     // shortcut that re-runs the query.
     val searchQueryShortcuts: Boolean = true,
@@ -468,6 +485,9 @@ data class LauncherPrefs(
     // runs the action (the behavior before this pref existed). Off runs the
     // action straight away, wherever the workspace was.
     val homeButtonOnMainPage: Boolean = true,
+    // On (the default): Home from an app, from recents or the screen turning
+    // off goes to the default page. Off keeps the page the user left (#317).
+    val homeReturnToDefaultPage: Boolean = true,
     // Desktop/drawer search bar configuration as one JSON document (see
     // ui/SearchBarConfig); "" = defaults (no desktop bar, local drawer filter).
     val searchBarConfig: String = "",
@@ -691,6 +711,8 @@ data class BackupPayload(
     val prefs: LauncherPrefs
 )
 
+// Serializable for AppListCache, the drawer's list kept between runs.
+@Serializable
 data class LaunchableApp(
     val packageName: String,
     val className: String,
